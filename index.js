@@ -72,47 +72,6 @@ function readDoubleLE(buffer, index) {
 	return ta[0];
 }
 
-function addQuotedStringRangeArr(out, buffer, nameStart, nameEnd, valStart, valEnd) {
-	out[this.outIdx++] = QUOTE;
-	this.writeStringRange(out, buffer, valStart, valEnd);
-	out[this.outIdx++] = QUOTE;
-}
-function addQuotedStringRangeObj(out, buffer, nameStart, nameEnd, valStart, valEnd) {
-	out[this.outIdx++] = QUOTE;
-	this.writeStringRange(out, buffer, nameStart, nameEnd);
-	out[this.outIdx++] = QUOTE;
-	out[this.outIdx++] = COLON;
-	out[this.outIdx++] = QUOTE;
-	this.writeStringRange(out, buffer, valStart, valEnd);
-	out[this.outIdx++] = QUOTE;
-}
-
-function addQuotedValArr(out, buffer, nameStart, nameEnd, val) {
-	out[this.outIdx++] = QUOTE;
-	for (let i = 0; i < val.length; i++) out[this.outIdx++] = val[i];
-	out[this.outIdx++] = QUOTE;
-}
-function addQuotedValObj(out, buffer, nameStart, nameEnd, val) {
-	out[this.outIdx++] = QUOTE;
-	this.writeStringRange(out, buffer, nameStart, nameEnd);
-	out[this.outIdx++] = QUOTE;
-	out[this.outIdx++] = COLON;
-	out[this.outIdx++] = QUOTE;
-	for (let i = 0; i < val.length; i++) out[this.outIdx++] = val[i];
-	out[this.outIdx++] = QUOTE;
-}
-
-function addValArr(out, buffer, nameStart, nameEnd, val) {
-	for (let i = 0; i < val.length; i++) out[this.outIdx++] = val[i];
-}
-function addValObj(out, buffer, nameStart, nameEnd, val) {
-	out[this.outIdx++] = QUOTE;
-	this.writeStringRange(out, buffer, nameStart, nameEnd);
-	out[this.outIdx++] = QUOTE;
-	out[this.outIdx++] = COLON;
-	for (let i = 0; i < val.length; i++) out[this.outIdx++] = val[i];
-}
-
 class Transcoder {
 	constructor() {
 		this.outIdx = 0;
@@ -121,13 +80,13 @@ class Transcoder {
 	/**
 	 * @param {Buffer} buffer
 	 */
-	transcode(buffer, options = {}, isArray = true) {
-		const index = options.index || 0;
+	transcode(buffer, isArray = true) {
+		const index = 0;
 
 		const size = readInt32LE(buffer, index);
 
-		if (size + index > buffer.length)
-			throw new Error(`(bson size ${size} + options.index ${index} must be <= buffer length ${buffer.length})`);
+		if (size > buffer.length)
+			throw new Error(`(bson size ${size} must be <= buffer length ${buffer.length})`);
 
 		// Illegal end value
 		if (buffer[index + size - 1] !== 0) {
@@ -136,7 +95,7 @@ class Transcoder {
 
 		const out = Buffer.alloc(1e8); // TODO overrun protection
 		this.outIdx = 0;
-		this.transcodeObject(out, buffer, index, options, isArray);
+		this.transcodeObject(out, buffer, index, isArray);
 		return out.slice(0, this.outIdx);
 	}
 
@@ -165,6 +124,20 @@ class Transcoder {
 		}
 	}
 
+	addQuotedStringRange(out, buffer, valStart, valEnd) {
+		out[this.outIdx++] = QUOTE;
+		this.writeStringRange(out, buffer, valStart, valEnd);
+		out[this.outIdx++] = QUOTE;
+	}
+	addQuotedVal(out, val) {
+		out[this.outIdx++] = QUOTE;
+		for (let i = 0; i < val.length; i++) out[this.outIdx++] = val[i];
+		out[this.outIdx++] = QUOTE;
+	}
+	addVal(out, val) {
+		for (let i = 0; i < val.length; i++) out[this.outIdx++] = val[i];
+	}
+
 	/**
 	 * @param {Buffer} out
 	 * @param {Buffer} buffer
@@ -172,7 +145,7 @@ class Transcoder {
 	 * @param {boolean} isArray
 	 * @private
 	 */
-	transcodeObject(out, buffer, index, options, isArray) {
+	transcodeObject(out, buffer, index, isArray) {
 		const bufLen = buffer.length;
 		const size = readInt32LE(buffer, index);
 		index += 4;
@@ -182,20 +155,7 @@ class Transcoder {
 
 		let first = true;
 
-		let addQuotedStringRange, addQuotedVal, addVal;
-		let nameStart, nameEnd;
-
-		if (isArray) {
-			out[this.outIdx++] = OPENSQ;
-			addQuotedStringRange = addQuotedStringRangeArr.bind(this);
-			addQuotedVal = addQuotedValArr.bind(this);
-			addVal = addValArr.bind(this);
-		} else {
-			out[this.outIdx++] = OPENCURL;
-			addQuotedStringRange = addQuotedStringRangeObj.bind(this);
-			addQuotedVal = addQuotedValObj.bind(this);
-			addVal = addValObj.bind(this);
-		}
+		out[this.outIdx++] = isArray? OPENSQ : OPENCURL;
 
 		while (true) {
 			const elementType = buffer[index++];
@@ -203,18 +163,27 @@ class Transcoder {
 			// If we get a zero it's the last byte, exit
 			if (elementType === 0) break;
 
-			// Name is a null-terminated string.
-			nameStart = nameEnd = index;
+			if (first) {
+				first = false;
+			} else {
+				out[this.outIdx++] = COMMA;
+			}
+
+			// Name is a null-terminated string. TODO we can copy bytes as we
+			// search.
+			let nameStart = index;
+			let nameEnd = index;
 			while (buffer[nameEnd] !== 0x00 && nameEnd < bufLen) {
 				nameEnd++;
 			}
 
 			if (nameEnd >= bufLen) throw new Error('Bad BSON Document: illegal CString');
 
-			if (first) {
-				first = false;
-			} else {
-				out[this.outIdx++] = COMMA;
+			if (!isArray) {
+				out[this.outIdx++] = QUOTE;
+				this.writeStringRange(out, buffer, nameStart, nameEnd);
+				out[this.outIdx++] = QUOTE;
+				out[this.outIdx++] = COLON;
 			}
 
 			index = nameEnd + 1;
@@ -226,35 +195,35 @@ class Transcoder {
 					if (
 						stringSize <= 0 ||
 						stringSize > bufLen - index ||
-						buffer[index + stringSize - 1] !== 0
+						buffer[index + stringSize - 1] !== 0 // TODO this is bad for cache access
 					)
 						throw new Error('bad string length in bson');
 
 					// if (!validateUtf8(buffer, index, index + stringSize - 1))
 					// 	throw new Error('Invalid UTF-8 string in BSON document');
 
-					addQuotedStringRange(out, buffer, nameStart, nameEnd, index, index + stringSize - 1);
+					this.addQuotedStringRange(out, buffer, index, index + stringSize - 1);
 
 					index += stringSize;
 					break;
 				}
 				case BSON_DATA_OID: {
 					const value = Buffer.from(buffer.toString('hex', index, index + 12)); // TODO transcode
-					addQuotedVal(out, buffer, nameStart, nameEnd, value);
+					this.addQuotedVal(out, value);
 
 					index += 12;
 					break;
 				}
 				case BSON_DATA_INT: {
 					const value = readInt32LE(buffer, index);
-					addVal(out, buffer, nameStart, nameEnd, Buffer.from(value.toString()));
+					this.addVal(out, Buffer.from(value.toString()));
 					index += 4;
 					break;
 				}
 				case BSON_DATA_NUMBER: {
 					// const value = buffer.readDoubleLE(index); // not sure which is faster TODO
 					const value = readDoubleLE(buffer, index);
-					addVal(out, buffer, nameStart, nameEnd, Buffer.from(value.toString()));
+					this.addVal(out, Buffer.from(value.toString()));
 					index += 8;
 					break;
 				}
@@ -264,14 +233,14 @@ class Transcoder {
 					const highBits = readInt32LE(buffer, index);
 					index += 4;
 					const value = Buffer.from(new Date(new Long(lowBits, highBits).toNumber()).toISOString());
-					addQuotedVal(out, buffer, nameStart, nameEnd, value);
+					this.addQuotedVal(out, value);
 					break;
 				}
 				case BSON_DATA_BOOLEAN: {
 					if (buffer[index] !== 0 && buffer[index] !== 1)
 						throw new Error('illegal boolean type value');
 					const value = buffer[index++] === 1;
-					addVal(out, buffer, nameStart, nameEnd, value ? TRUE : FALSE);
+					this.addVal(out, value ? TRUE : FALSE);
 					break;
 				}
 				case BSON_DATA_OBJECT: {
@@ -279,29 +248,24 @@ class Transcoder {
 					if (objectSize <= 0 || objectSize > bufLen - index)
 						throw new Error('bad embedded document length in bson');
 
-					addVal(out, buffer, nameStart, nameEnd, NOTHING);
-					this.transcodeObject(out, buffer, index, options, false);
+					this.transcodeObject(out, buffer, index, false);
 
 					index += objectSize;
 					break;
 				}
 				case BSON_DATA_ARRAY: {
 					const objectSize = readInt32LE(buffer, index);
-					const stopIndex = index + objectSize;
 
-					addVal(out, buffer, nameStart, nameEnd, NOTHING);
-					this.transcodeObject(out, buffer, index, options, true);
+					this.transcodeObject(out, buffer, index, true);
 
 					index += objectSize;
 
 					if (buffer[index - 1] !== 0)
 						throw new Error('invalid array terminator byte');
-					if (index !== stopIndex)
-						throw new Error('corrupted array bson');
 					break;
 				}
 				case BSON_DATA_NULL: {
-					addVal(out, buffer, nameStart, nameEnd, NULL);
+					this.addVal(out, NULL);
 					break;
 				}
 				case BSON_DATA_LONG: {
@@ -318,10 +282,12 @@ class Transcoder {
 						vx = inJsRange ? long.toNumber() : long;
 					}
 					const value = Buffer.from(vx.toString());
-					addVal(out, buffer, nameStart, nameEnd, value);
+					this.addVal(out, value);
 					break;
 				}
-				case BSON_DATA_UNDEFINED: // noop
+				case BSON_DATA_UNDEFINED:
+					// noop
+					break;
 				case BSON_DATA_DECIMAL128:
 				case BSON_DATA_BINARY:
 				case BSON_DATA_REGEXP:
