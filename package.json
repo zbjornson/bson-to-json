@@ -9,5 +9,12 @@
   "dependencies": {
     "long": "^4.0.0",
     "nan": "^2.14.0"
+  },
+  "devDependencies": {
+    "bson": "^4.0.2",
+    "mocha": "^6.2.2"
+  },
+  "scripts": {
+    "test": "mocha"
   }
 }

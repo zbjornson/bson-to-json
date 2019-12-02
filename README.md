@@ -20,12 +20,18 @@ Major reasons it's fast:
 * No UTF8 string decoding. String bytes can be copied almost directly (with JSON
   escaping).
 * No waste temporary objects created for the GC to clean up.
-* (Planned) ObjectIds transcoded directly to hex strings.
 * SSE4.2 or AVX2-accelerated JSON string escaping.
 * AVX2-accelerated ObjectId hex string encoding, using the technique from
   [zbjornson/fast-hex](https://github.com/zbjornson/fast-hex).
 
 TODO:
-* Tests
-* Checking bounds on output buffer
+* Harmonize C++ and JS interface
+* Checking bounds on output buffer. Right now allocates a fixed buffer that
+  works for my particular test case.
 * Try to squash the remaining v8 deoptimizations.
+* JS impl ObjectId decoding can bypass Buffer.
+* Portable (non-AVX2) C++ ObjectId decoding.
+* Preprocessor directives or dispatch for SSE4.2, AVX2
+* Try to make the `isArray` parameter optional.
+* Error handling (uses C++ exceptions but Node.js disables C++ exceptions)
+* Optimize number-to-string (currently uses sprintf, faster libraries are available)

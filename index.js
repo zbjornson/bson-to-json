@@ -177,7 +177,8 @@ class Transcoder {
 				nameEnd++;
 			}
 
-			if (nameEnd >= bufLen) throw new Error('Bad BSON Document: illegal CString');
+			if (nameEnd >= bufLen)
+				throw new Error('Bad BSON Document: illegal CString');
 
 			if (!isArray) {
 				out[this.outIdx++] = QUOTE;
@@ -223,7 +224,11 @@ class Transcoder {
 				case BSON_DATA_NUMBER: {
 					// const value = buffer.readDoubleLE(index); // not sure which is faster TODO
 					const value = readDoubleLE(buffer, index);
-					this.addVal(out, Buffer.from(value.toString()));
+					if (Number.isFinite(value)) {
+						this.addVal(out, Buffer.from(value.toString()));
+					} else {
+						this.addVal(out, NULL);
+					}
 					index += 8;
 					break;
 				}
@@ -232,7 +237,8 @@ class Transcoder {
 					index += 4;
 					const highBits = readInt32LE(buffer, index);
 					index += 4;
-					const value = Buffer.from(new Date(new Long(lowBits, highBits).toNumber()).toISOString());
+					const ms = new Long(lowBits, highBits).toNumber();
+					const value = Buffer.from(new Date(ms).toISOString());
 					this.addQuotedVal(out, value);
 					break;
 				}
@@ -277,9 +283,7 @@ class Transcoder {
 					if (highBits === 0) {
 						vx = lowBits;
 					} else {
-						const long = new Long(lowBits, highBits);
-						const inJsRange = long.lte(Number.MAX_SAFE_INTEGER) && long.gte(Number.MIN_SAFE_INTEGER);
-						vx = inJsRange ? long.toNumber() : long;
+						vx = new Long(lowBits, highBits);
 					}
 					const value = Buffer.from(vx.toString());
 					this.addVal(out, value);
@@ -301,7 +305,8 @@ class Transcoder {
 					// incompatible JSON type
 					break;
 				default:
-					throw new Error('Detected unknown BSON type ' + elementType.toString(16));
+					throw new Error('Detected unknown BSON type ' +
+						elementType.toString(16));
 			}
 		}
 
@@ -311,13 +316,13 @@ class Transcoder {
 
 module.exports = Transcoder;
 
-const x = new Transcoder();
-const fs = require("fs");
-const data = fs.readFileSync("./data.bson");
-let json;
-console.time("transcode");
-for (let i = 0; i < 10; i++)
-	json = x.transcode(data);
-console.timeEnd("transcode");
-fs.writeFileSync("./data.json", json);
-require("./data.json");
+// const x = new Transcoder();
+// const fs = require("fs");
+// const data = fs.readFileSync("./data.bson");
+// let json;
+// console.time("transcode");
+// for (let i = 0; i < 10; i++)
+// 	json = x.transcode(data);
+// console.timeEnd("transcode");
+// fs.writeFileSync("./data.json", json);
+// require("./data.json");

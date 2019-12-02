@@ -8,7 +8,7 @@ let json;
 // json = bindings.bsonToJson(data);
 
 console.time("transcode");
-for (let i = 0; i < 10; i++)
+for (let i = 0; i < 100; i++)
 	json = bindings.bsonToJson(data);
 console.timeEnd("transcode");
 fs.writeFileSync("./datac.json", json);

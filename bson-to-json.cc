@@ -6,6 +6,7 @@
 #include <cstdio> // sprintf
 #include <cfloat> // DBL_DIG
 #include <iostream>
+#include <ctime> // strftime
 
 #ifdef _MSC_VER
 # include <intrin.h>
@@ -42,24 +43,17 @@ constexpr uint8_t BSON_DATA_DECIMAL128 = 19;
 constexpr uint8_t BSON_DATA_MIN_KEY = 0xff;
 constexpr uint8_t BSON_DATA_MAX_KEY = 0x7f;
 
-constexpr uint8_t QUOTE = '"';
-constexpr uint8_t COLON = ':';
-constexpr uint8_t COMMA = ',';
-constexpr uint8_t CLOSESQ = ']';
-constexpr uint8_t CLOSECURL = '}';
-constexpr uint8_t BACKSLASH = '\\';
-
-const __m256i HEX_LUTR = _mm256_setr_epi8(
-	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f');
-const __m256i ROT2 = _mm256_setr_epi8(
-	-1, 0, -1, 2, -1, 4, -1, 6, -1, 8, -1, 10, -1, 12, -1, 14,
-	-1, 0, -1, 2, -1, 4, -1, 6, -1, 8, -1, 10, -1, 12, -1, 14
-);
 // Technique from https://github.com/zbjornson/fast-hex
-inline __m256i encodeHex(__m128i val) {
+inline static __m256i encodeHex(__m128i val) {
+	const __m256i HEX_LUTR = _mm256_setr_epi8(
+		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f');
+	const __m256i ROT2 = _mm256_setr_epi8(
+		-1, 0, -1, 2, -1, 4, -1, 6, -1, 8, -1, 10, -1, 12, -1, 14,
+		-1, 0, -1, 2, -1, 4, -1, 6, -1, 8, -1, 10, -1, 12, -1, 14
+	);
 	// Bytes to nibbles (a -> [a >> 4, a & 0b1111]):
-	__m256i doubled = _mm256_cvtepi8_epi16(val);
+	__m256i doubled = _mm256_cvtepu8_epi16(val);
 	__m256i hi = _mm256_srli_epi16(doubled, 4);
 	__m256i lo = _mm256_shuffle_epi8(doubled, ROT2);
 	__m256i bytes = _mm256_or_si256(hi, lo);
@@ -72,7 +66,7 @@ constexpr uint8_t NOESC = 91;
 // Returns the char to use to escape c if it requires escaping, or returns
 // NOESC if it does not require escaping. NOESC is a valid character in a JSON
 // string and must have been handled already; see writeEscapedChars.
-uint8_t getEscape(uint8_t c) {
+inline static uint8_t getEscape(uint8_t c) {
 	switch (c) {
 	case 8: return 'b';
 	case 9: return 't';
@@ -343,30 +337,59 @@ private:
 				break;
 			}
 			case BSON_DATA_OID: {
-				// TODO Untested
-				__m128i a = _mm_maskload_epi32(reinterpret_cast<int const*>(&in[inIdx]), _mm_set1_epi32(0x808080)); // 12B = 3x4B
-				__m256i b = encodeHex(a);
-				_mm256_maskstore_epi32(reinterpret_cast<int*>(&out[outIdx]), _mm256_set1_epi32(0x808080808080), b); // 24B = 6x4B
+				// TODO mask load is 4,0.5, load is 2,0.5. Overrun the load where possible:
+				// if (not at end of buffer) {
+				//	 __m128i a = _mm_loadu_si128(reinterpret_cast<__m128i const*>(in + inIdx)); // 12B = 3x4B
+				// } else {
+				__m128i loadmask = _mm_set_epi32(0, 0x80000000, 0x80000000, 0x80000000); // 12B = 3x4B
+				__m128i a = _mm_maskload_epi32(reinterpret_cast<int const*>(in + inIdx), loadmask);
+				// }
 				inIdx += 12;
+				__m256i b = encodeHex(a);
+				out[outIdx++] = '"';
+				// TODO mask store is 14,1, store is 3,1. Overrun the store where possible:
+				// if (not at end of buffer) {
+				//   _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), b);
+				// } else {
+				__m256i storemask = _mm256_set_epi32(0, 0, 0x80000000, 0x80000000,
+					0x80000000, 0x80000000, 0x80000000, 0x80000000); // 24B = 6x4B
+				_mm256_maskstore_epi32(reinterpret_cast<int*>(out + outIdx), storemask, b);
+				// }
+				outIdx += 24;
+				out[outIdx++] = '"';
 				break;
 			}
 			case BSON_DATA_INT: {
 				const int32_t value = readInt32LE();
 				const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%d", value);
 				// Safer:
-				// snprintf(reinterpret_cast<char*>(out) + outIdx, nRemaining, "%d", value);
+				// snprintf(reinterpret_cast<char*>(out + outIdx), nRemaining, "%d", value);
 				outIdx += n;
 				break;
 			}
 			case BSON_DATA_NUMBER: {
 				const double value = readDoubleLE();
-				const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%.*f", DBL_DIG, value);
-				outIdx += n;
+				if (std::isfinite(value)) {
+					const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%.*f", DBL_DIG, value);
+					outIdx += n;
+				} else {
+					out[outIdx++] = 'n';
+					out[outIdx++] = 'u';
+					out[outIdx++] = 'l';
+					out[outIdx++] = 'l';
+				}
 				break;
 			}
 			case BSON_DATA_DATE: {
-				// TODO
-				inIdx += 8;
+				const int64_t value = readInt64LE(); // BSON encodes UTC ms since Unix epoch
+				const time_t seconds = value / 1000;
+				const int32_t millis = value % 1000;
+				out[outIdx++] = '"';
+				size_t n = strftime(reinterpret_cast<char*>(out + outIdx), 24, "%FT%T", gmtime(&seconds));
+				outIdx += n;
+				n = sprintf(reinterpret_cast<char*>(out + outIdx), ".%03dZ", millis);
+				outIdx += n;
+				out[outIdx++] = '"';
 				break;
 			}
 			case BSON_DATA_BOOLEAN: {
@@ -422,7 +445,7 @@ private:
 			case BSON_DATA_CODE:
 			case BSON_DATA_CODE_W_SCOPE:
 			case BSON_DATA_DBPOINTER:
-				// incompatible JSON type
+				// incompatible JSON type - TODO still need to at least skip these parts of the doc
 				break;
 			default:
 				throw std::runtime_error("Unknown BSON type");
@@ -434,12 +457,14 @@ private:
 };
 
 NAN_METHOD(bsonToJson) {
-	v8::Isolate* iso = Nan::GetCurrentContext()->GetIsolate();
+	v8::Local<v8::Context> ctx = Nan::GetCurrentContext();
+	v8::Isolate* iso = ctx->GetIsolate();
 	v8::Local<v8::Uint8Array> arr = info[0].As<v8::Uint8Array>();
 	Nan::TypedArrayContents<uint8_t> data(arr);
+	bool isArray = info[1].As<v8::Boolean>()->Value();
 
 	Transcoder trans;
-	trans.transcode(*data, data.length(), true);
+	trans.transcode(*data, data.length(), isArray);
 
 	v8::Local<v8::Value> buf = node::Buffer::New(iso, reinterpret_cast<char*>(trans.out), trans.outIdx).ToLocalChecked();
 
