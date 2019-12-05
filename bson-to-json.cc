@@ -190,7 +190,7 @@ private:
 		__m256i esc92 = _mm256_set1_epi8('\\');
 
 		while (inIdx < end) {
-			const int clampedN = n > 32 ? 32 : n;
+			const size_t clampedN = n > 32 ? 32 : n;
 			__m256i chars = _mm256_loadu_si256(reinterpret_cast<__m256i const*>(&in[inIdx])); // TODO this can overrun (okay except at end)
 
 			__m256i iseq = _mm256_cmpgt_epi8(chars, esc7);
@@ -466,9 +466,9 @@ NAN_METHOD(bsonToJson) {
 	Transcoder trans;
 	trans.transcode(*data, data.length(), isArray);
 
-	v8::Local<v8::Value> buf = node::Buffer::New(iso, reinterpret_cast<char*>(trans.out), trans.outIdx).ToLocalChecked();
+	v8::Local<v8::Value> buf = node::Buffer::Copy(iso, reinterpret_cast<char*>(trans.out), trans.outIdx).ToLocalChecked();
 
-	//trans.neuter();
+	trans.neuter();
 
 	info.GetReturnValue().Set(buf);
 }

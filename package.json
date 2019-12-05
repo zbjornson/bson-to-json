@@ -11,6 +11,8 @@
     "nan": "^2.14.0"
   },
   "devDependencies": {
+    "beautify-benchmark": "^0.2.4",
+    "benchmark": "^2.1.4",
     "bson": "^4.0.2",
     "mocha": "^6.2.2"
   },

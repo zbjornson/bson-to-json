@@ -33,13 +33,11 @@ global.it = global.it || function it(label, fn) { fn(); };
 // TODO {arr: [1, undefined]} -> '{"arr": [1, null]}'
 
 describe("bson2json - JS", function () {
-	const Transcoder = require("../index.js");
+	const {bsonToJson} = require("../index.js");
 
 	it("deserializes all JSON types", function () {
 		const bsonBuffer = bson.serialize(doc1);
-
-		const t = new Transcoder();
-		const jsonBuffer = t.transcode(bsonBuffer, false);
+		const jsonBuffer = bsonToJson(bsonBuffer, false);
 
 		const expected = JSON.parse(JSON.stringify(doc1));
 		// The JSON string will contain 1152921500580315135, which parses to

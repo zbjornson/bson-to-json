@@ -35,10 +35,9 @@ const CLOSESQ = ']'.charCodeAt(0);
 const CLOSECURL = '}'.charCodeAt(0);
 const BACKSLASH = '\\'.charCodeAt(0);
 
-const TRUE = Buffer.from('true');
-const FALSE = Buffer.from('false');
-const NULL = Buffer.from('null');
-const NOTHING = Buffer.alloc(0);
+const TRUE = Buffer.from("true");
+const FALSE = Buffer.from("false");
+const NULL = Buffer.from("null");
 
 const ESCAPES = {
 	8: 'b'.charCodeAt(0),
@@ -121,6 +120,22 @@ class Transcoder {
 			} else {
 				out[this.outIdx++] = c;
 			}
+		}
+	}
+
+	/**
+	 * This is the same speed as a 16B LUT and a 512B LUT, and doesn't pollute
+	 * the cache. js-bson is still winning in the ObjectId benchmark though,
+	 * despite having extra copying and a call into C++.
+	 * @private
+	 */
+	writeObjectId(out, buffer, start) {
+		for (let i = start; i < start + 12; i++) {
+			const byte = buffer[i];
+			const hi = byte >>> 4;
+			const lo = byte & 0xF;
+			out[this.outIdx++] = hi + (hi < 10 ? 48 : 87);
+			out[this.outIdx++] = lo + (lo < 10 ? 48 : 87);
 		}
 	}
 
@@ -209,8 +224,9 @@ class Transcoder {
 					break;
 				}
 				case BSON_DATA_OID: {
-					const value = Buffer.from(buffer.toString('hex', index, index + 12)); // TODO transcode
-					this.addQuotedVal(out, value);
+					out[this.outIdx++] = QUOTE;
+					this.writeObjectId(out, buffer, index);
+					out[this.outIdx++] = QUOTE;
 
 					index += 12;
 					break;
@@ -314,15 +330,17 @@ class Transcoder {
 	}
 }
 
-module.exports = Transcoder;
+exports.bsonToJson = function bsonToJson(doc, isArray) {
+	const t = new Transcoder();
+	return t.transcode(doc, isArray);
+};
 
-// const x = new Transcoder();
 // const fs = require("fs");
 // const data = fs.readFileSync("./data.bson");
 // let json;
 // console.time("transcode");
 // for (let i = 0; i < 10; i++)
-// 	json = x.transcode(data);
+// 	json = bsonToJson(data);
 // console.timeEnd("transcode");
 // fs.writeFileSync("./data.json", json);
 // require("./data.json");

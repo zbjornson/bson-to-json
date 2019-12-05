@@ -8,13 +8,13 @@ medium objects (9MB BSON):
 
 | Method | Time (ms) |
 | ------ | --------: |
-| `JSON.stringify(BSON.deserialize(arr))`* | 196 |
+| `JSON.stringify(BSON.deserialize(arr))`<sup>1</sup> | 196 |
 | this, JS | 36 |
 | this, portable C++ | 25 |
 | this, SSE4.2 | 13 |
 | this, AVX2 | 11 |
 
-* `BSON.deserialize` is the [official MongoDB js-bson implementation](https://github.com/mongodb/js-bson).
+<sup>1</sup> `BSON.deserialize` is the [official MongoDB js-bson implementation](https://github.com/mongodb/js-bson).
 
 Major reasons it's fast:
 * No UTF8 string decoding. String bytes can be copied almost directly (with JSON
@@ -24,12 +24,12 @@ Major reasons it's fast:
 * AVX2-accelerated ObjectId hex string encoding, using the technique from
   [zbjornson/fast-hex](https://github.com/zbjornson/fast-hex).
 
+This module also writes full-precision (64-bit signed) BSON Longs to the JSON buffer. (JSON does not specify a maximum numeric precision.) That isn't possible with js-bson as far as I know; it writes an object with low and high bits.
+
 TODO:
-* Harmonize C++ and JS interface
 * Checking bounds on output buffer. Right now allocates a fixed buffer that
   works for my particular test case.
 * Try to squash the remaining v8 deoptimizations.
-* JS impl ObjectId decoding can bypass Buffer.
 * Portable (non-AVX2) C++ ObjectId decoding.
 * Preprocessor directives or dispatch for SSE4.2, AVX2
 * Try to make the `isArray` parameter optional.
