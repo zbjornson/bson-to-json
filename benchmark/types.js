@@ -49,7 +49,7 @@ if (types.includes("date")) {
 
 if (types.includes("int")) {
 	// Ints are 4B + 1B type header = 5B each = ~6400 values in L1$
-	const docs = Array.from({length: 2000}, (v, i) => i);
+	const docs = Array.from({length: 2000}, (v, i) => i * 1000000);
 	const buf = bson.serialize(docs);
 	addAndRun("Int", buf);
 }
@@ -79,9 +79,20 @@ if (types.includes("long")) {
 	const Long = bson.Long;
 
 	// Longs are 8B + 1B type header = 9B each = ~3555 values in L1$
-	const docs = Array.from({length: 1000}, () => new Long(0xFFFFFFF, 0xFFFFFFF));
+	const docs = Array.from({length: 1000}, () => new Long(0x1fffff, 0xffffffff));
 	const buf = bson.serialize(docs);
-	// This test isn't fair; bsonToJson losslessly writes full int64s, whereas
-	// js-bson writes `{low: number, high: number, unsigned: boolean}`.
+
+	// Large values in this test aren't fair; bsonToJson losslessly writes full
+	// int64s, whereas js-bson writes `{low: number, high: number, unsigned:
+	// boolean}`.
+	// const docs = Array.from({length: 1000}, () => new Long(0xFFFFFFF, 0xFFFFFFF));
+
 	addAndRun("Long", buf);
+}
+
+if (types.includes("string")) {
+	// Strings are 1B type header + 4B length + data
+	const docs = Array.from({length: 1000}, () => "abc\tefghijk");
+	const buf = bson.serialize(docs);
+	addAndRun("String", buf);
 }

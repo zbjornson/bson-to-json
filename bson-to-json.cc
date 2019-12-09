@@ -43,6 +43,52 @@ constexpr uint8_t BSON_DATA_DECIMAL128 = 19;
 constexpr uint8_t BSON_DATA_MIN_KEY = 0xff;
 constexpr uint8_t BSON_DATA_MAX_KEY = 0x7f;
 
+// Adaptetd from https://github.com/fmtlib/fmt/blob/master/include/fmt/format.h#L2818,
+// MIT license
+const char digits[] =
+	"0001020304050607080910111213141516171819"
+	"2021222324252627282930313233343536373839"
+	"4041424344454647484950515253545556575859"
+	"6061626364656667686970717273747576777879"
+	"8081828384858687888990919293949596979899";
+
+template<typename T>
+size_t fast_itoa(uint8_t* buf, T val) {
+	char temp[20]; // largest int32 is 10 digits + sign, largest int64 is 19+sign
+	char* p = temp + 10;
+	size_t n = 0;
+
+	const bool isNegative = val < 0;
+	if (isNegative)
+		val = 0 - val;
+
+	while (val >= 100) {
+		size_t index = static_cast<size_t>((val % 100) * 2);
+		val /= 100;
+		*--p = digits[index + 1];
+		*--p = digits[index];
+		n += 2;
+	}
+
+	if (val < 10) {
+		*--p = static_cast<uint8_t>('0' + val);
+		n++;
+	} else {
+		size_t index = static_cast<size_t>(val * 2);
+		*--p = digits[index + 1];
+		*--p = digits[index];
+		n += 2;
+	}
+
+	if (isNegative) {
+		*--p = '-';
+		n++;
+	}
+
+	memcpy(buf, p, n);
+	return n;
+}
+
 // Technique from https://github.com/zbjornson/fast-hex
 inline static __m256i encodeHex(__m128i val) {
 	const __m256i HEX_LUTR = _mm256_setr_epi8(
@@ -361,10 +407,7 @@ private:
 			}
 			case BSON_DATA_INT: {
 				const int32_t value = readInt32LE();
-				const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%d", value);
-				// Safer:
-				// snprintf(reinterpret_cast<char*>(out + outIdx), nRemaining, "%d", value);
-				outIdx += n;
+				outIdx += fast_itoa(out + outIdx, value);
 				break;
 			}
 			case BSON_DATA_NUMBER: {
@@ -428,8 +471,7 @@ private:
 			}
 			case BSON_DATA_LONG: {
 				const int64_t value = readInt64LE();
-				const int n = sprintf(reinterpret_cast<char*>(out + outIdx), int64spec, value);
-				outIdx += n;
+				outIdx += fast_itoa(out + outIdx, value);
 				break;
 			}
 			case BSON_DATA_UNDEFINED:

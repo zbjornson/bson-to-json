@@ -9,6 +9,7 @@ const doc1 = {
 	string: "string\tdata\n",
 	objectId: new bson.ObjectId(),
 	int: 1,
+	int2: -2345718,
 	number: Math.PI,
 	date: new Date(1575271655028), // has a 0 in the millis (028)
 	boolean: false,

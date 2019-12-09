@@ -233,6 +233,7 @@ class Transcoder {
 				}
 				case BSON_DATA_INT: {
 					const value = readInt32LE(buffer, index);
+					// JS impl of fast_itoa is slower than this.
 					this.addVal(out, Buffer.from(value.toString()));
 					index += 4;
 					break;
