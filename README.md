@@ -36,7 +36,6 @@ TODO:
 * Error handling (uses C++ exceptions but Node.js disables C++ exceptions)
 * Optimize number (double) (currently uses sprintf)
 * Escape \\uxxx in strings
-* Convert from NAN to N-API.
 
 ## Benchmarks by BSON type (ops/sec):
 

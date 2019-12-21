@@ -56,7 +56,7 @@ describe("bson2json - JS", function () {
 });
 
 describe("bson2json - C++", function () {
-	const {bsonToJson} = require("../build/release/bson-to-json.node");
+	const {bsonToJson} = require("../build/release/bsonToJson.node");
 
 	it("deserializes all JSON types", function () {
 		const bsonBuffer = bson.serialize(doc1);

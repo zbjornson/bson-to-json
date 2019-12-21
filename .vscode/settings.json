@@ -1,0 +1,6 @@
+{
+	"C_Cpp.default.includePath": [
+		"node_modules/node-addon-api/",
+		"node_modules/node-addon-api/external-napi/"
+	]
+}

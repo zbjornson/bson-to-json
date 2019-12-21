@@ -6,7 +6,7 @@ const benchmarks = require("beautify-benchmark");
 
 const bson = require("bson");
 const JS = require("../index.js");
-const CPP = require("../build/release/bson-to-json.node");
+const CPP = require("../build/release/bsonToJson.node");
 
 function addAndRun(name, buf) {
 	const suite = new benchmark.Suite(name, {

@@ -1,4 +1,4 @@
-#include <nan.h>
+#include "napi.h"
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -562,23 +562,26 @@ private:
 	}
 };
 
-NAN_METHOD(bsonToJson) {
-	v8::Local<v8::Context> ctx = Nan::GetCurrentContext();
-	v8::Isolate* iso = ctx->GetIsolate();
-	v8::Local<v8::Uint8Array> arr = info[0].As<v8::Uint8Array>();
-	Nan::TypedArrayContents<uint8_t> data(arr);
-	bool isArray = info[1].As<v8::Boolean>()->Value();
+Napi::Buffer<uint8_t> bsonToJson(const Napi::CallbackInfo& info) {
+	Napi::Env env = info.Env();
+
+	Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
+	bool isArray = info[1].As<Napi::Boolean>().Value();
 
 	Transcoder trans;
-	trans.transcode(*data, data.length(), isArray);
+	trans.transcode(arr.Data(), arr.ByteLength(), isArray);
 
-	v8::Local<v8::Value> buf = node::Buffer::New(iso, reinterpret_cast<char*>(trans.out), trans.outIdx).ToLocalChecked();
+	Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx, [](Napi::Env, uint8_t* data) {
+		free(data);
+	});
 
-	info.GetReturnValue().Set(buf);
+	return buf;
 }
 
-NAN_MODULE_INIT(Init) {
-	NAN_EXPORT(target, bsonToJson);
+Napi::Object Init(Napi::Env env, Napi::Object exports) {
+	exports.Set(Napi::String::New(env, "bsonToJson"), Napi::Function::New(env, bsonToJson));
+
+	return exports;
 }
 
-NODE_MODULE(bsonToJson, Init);
+NODE_API_MODULE(NODE_GYP_MODULE_NAME, Init)

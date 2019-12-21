@@ -1,4 +1,4 @@
-const bindings = require("./build/release/bson-to-json.node");
+const bindings = require("./build/release/bsonToJson.node");
 
 const fs = require("fs");
 const data = fs.readFileSync("./data.bson");
