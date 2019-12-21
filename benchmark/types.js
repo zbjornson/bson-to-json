@@ -8,7 +8,10 @@
  *     node ./benchmark/types.js space separated list of types
  * 
  * Where the list of types can be any of ObjectId, Date, Int, Number, Long,
- * Boolean or Null (case-insensitive). TODO String.
+ * Boolean, Null and/or String (case-insensitive).
+ *
+ * With String, also specify `--len=<int> --escape=<0 to 1>` to specify the
+ * string length and fraction of characters that must be escaped.
  */
 
 const benchmark = require("benchmark");
@@ -26,6 +29,7 @@ function addAndRun(name, buf) {
 		onComplete: () => benchmarks.log()
 	});
 
+	console.log(name);
 	// NB: this returns an object with numeric keys
 	suite.add("js-bson", () => Buffer.from(JSON.stringify(bson.deserialize(buf))));
 	suite.add("bsonToJson JS", () => JS.bsonToJson(buf, true));
@@ -91,8 +95,20 @@ if (types.includes("long")) {
 }
 
 if (types.includes("string")) {
+	const lenArg = process.argv.find(a => a.startsWith("--len="));
+	const escArg = process.argv.find(a => a.startsWith("--escape="));
+	if (!lenArg || !escArg) {
+		console.log("Specify --len=<int> --escape=<0 to 1> when testing strings");
+		process.exit(1);
+	}
+	const len = Number.parseInt(lenArg.split("=")[1], 10);
+	const esc = Number.parseFloat(escArg.split("=")[1]);
+	const str = Array.from({length: len}, () => {
+		return Math.random() < esc ? "\t" : "a";
+	}).join("");
 	// Strings are 1B type header + 4B length + data
-	const docs = Array.from({length: 1000}, () => "abc\tefghijk");
+	const aSize = Math.ceil(16000 / (5 + len));
+	const docs = Array.from({length: aSize}, () => str);
 	const buf = bson.serialize(docs);
-	addAndRun("String", buf);
+	addAndRun(`String<len=${len} escape=${esc}>`, buf);
 }
