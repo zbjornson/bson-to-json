@@ -1,11 +1,11 @@
 #include <nan.h>
-#include <stdint.h>
+#include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <string.h>
 #include <stdexcept>
 #include <cstdio> // sprintf
 #include <cfloat> // DBL_DIG
-#include <iostream>
 #include <ctime> // strftime
 
 #ifdef _MSC_VER
@@ -20,6 +20,12 @@ constexpr const char* int64spec = "%I64d";
 #else
 constexpr const char* int64spec = "%ld";
 #endif
+
+using std::size_t;
+using std::uint8_t;
+using std::int32_t;
+using std::uint32_t;
+using std::int64_t;
 
 constexpr uint8_t BSON_DATA_NUMBER = 1;
 constexpr uint8_t BSON_DATA_STRING = 2;
@@ -102,8 +108,8 @@ inline static __m256i encodeHex(__m128i val) {
 	__m256i doubled = _mm256_cvtepu8_epi16(val);
 	__m256i hi = _mm256_srli_epi16(doubled, 4);
 	__m256i lo = _mm256_shuffle_epi8(doubled, ROT2);
-	__m256i bytes = _mm256_or_si256(hi, lo);
-	bytes = _mm256_and_si256(bytes, _mm256_set1_epi8(0b1111)); // cvtepi8_epi16 is sign-extending
+	__m256i bytes = _mm256_or_si256(hi, lo); // avx512: mask_shuffle to avoid the OR
+	bytes = _mm256_and_si256(bytes, _mm256_set1_epi8(0b1111));
 	// Encode hex
 	return _mm256_shuffle_epi8(HEX_LUTR, bytes);
 }
@@ -130,20 +136,31 @@ class Transcoder {
 public:
 	uint8_t* out = nullptr;
 	size_t outIdx = 0;
+	size_t outLen = 0;
 
 	void transcode(uint8_t* in_, size_t inLen_, bool isArray = true) {
 		in = in_;
 		inLen = inLen_;
 		inIdx = 0;
 
-		out = new uint8_t[10000000]; // TODO
-		outIdx = 0;
+		// Estimate outLen is 1.25x inLen. Expansion rates for values:
+		// ObjectId: 12B -> 24B plus 2 for quotes
+		// String: 5 for header + 1 per char -> 1 or 2 per char + 2 for quotes
+		// Int: 1+4 -> up to 11
+		// Long: 1+8 -> up to 20
+		// Number: 1+8 -> up to ???
+		// Date: 1+8 -> 24 plus 2 for quotes
+		// Boolean: 1+1 -> 4 or 5
+		// Null: 1+0 -> 4
+		// The maximum expansion ratio is 1:5 (for null), but averages 2.3x for
+		// mixed data or ~1x for string-heavy data.
+		resize((inLen * 10) >> 2); // Initially 2.5x
 
 		transcodeObject(isArray);
 	}
 
 	void neuter() {
-		delete[] out;
+		std::free(out);
 		out = nullptr;
 		outIdx = 0;
 	}
@@ -173,16 +190,40 @@ private:
 		return v;
 	}
 
+	int resize(size_t to) {
+		// printf("resizing from %d to %d\n", outLen, to);
+		uint8_t* oldOut = out;
+		out = static_cast<uint8_t*>(std::realloc(static_cast<void*>(out), to));
+		if (out == nullptr) {
+			std::free(oldOut);
+			return ENOMEM;
+		}
+		outLen = to;
+		return 0;
+	}
+
+	void ensureSpace(size_t n) {
+		if (outIdx + n < outLen) [[likely]] {
+			return;
+		}
+
+		int status = resize((outLen * 3) >> 1);
+		if (status)
+			std::quick_exit(status);
+	}
+
 	// Writes n characters from in to out, escaping per JSON spec.
 	// Portable/scalar
 	void writeEscapedCharsBaseline(size_t n) {
 		const size_t end = inIdx + n;
+		ensureSpace(n);
 		while (inIdx < end) {
 			uint8_t xc;
 			const uint8_t c = in[inIdx++];
 			if (c > 47 && c != 92) {
 				out[outIdx++] = c;
 			} else if ((xc = getEscape(c)) != NOESC) {
+				ensureSpace(end - inIdx + 1);
 				out[outIdx++] = '\\';
 				out[outIdx++] = xc;
 			} else {
@@ -194,6 +235,7 @@ private:
 	// SSE4.2
 	void writeEscapedCharsSSE42(size_t n) {
 		const size_t end = inIdx + n;
+		ensureSpace(n);
 
 		const __m128i escapes = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0, '\b', '\t', '\n', '\f', '\r', '"', '/', '\\');
 
@@ -215,6 +257,7 @@ private:
 			inIdx += esRIdx;
 
 			if (esRIdx < clampedN) {
+				ensureSpace(end - inIdx + 1);
 				out[outIdx++] = '\\';
 				out[outIdx++] = getEscape(in[inIdx++]);
 				n--;
@@ -225,6 +268,7 @@ private:
 	// AVX2
 	void writeEscapedChars(size_t n) {
 		const size_t end = inIdx + n;
+		ensureSpace(n);
 
 		// x == 8 || x == 9 || x == 10 || x == 12 || x == 13 || x == 34 || x == 47 || x == 92
 		// (x > 7 && 14 > x &! x == 11) || x == 34 || x == 47 || x == 92
@@ -261,6 +305,7 @@ private:
 			inIdx += esRIdx;
 
 			if (esRIdx < clampedN) {
+				ensureSpace(end - inIdx + 1);
 				out[outIdx++] = '\\';
 				out[outIdx++] = getEscape(in[inIdx++]);
 				n--;
@@ -271,13 +316,14 @@ private:
 	// Writes the null-terminated string from in to out, escaping per JSON spec.
 	// SSE4.2
 	void writeEscapedChars() {
-		const __m128i escapes = _mm_set_epi8(0, 0, 0, 0, 255,93, 91,48, 46,35, 33,14, 11,11, 7,1);
+		const __m128i escapes = _mm_set_epi8(0, 0, 0, 0, 0xff,93, 91,48, 46,35, 33,14, 11,11, 7,1);
 
 		while (inIdx < inLen) {
 			__m128i chars = _mm_loadu_si128(reinterpret_cast<__m128i const*>(&in[inIdx])); // TODO this can overrun
 			int esRIdx = _mm_cmpistri(escapes, chars,
 				_SIDD_UBYTE_OPS | _SIDD_CMP_RANGES | _SIDD_NEGATIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT);
 
+			ensureSpace(esRIdx);
 			_mm_storeu_si128(reinterpret_cast<__m128i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
 			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
 			outIdx += esRIdx;
@@ -320,6 +366,7 @@ private:
 			uint32_t mask = _mm256_movemask_epi8(iseq);
 			uint32_t esRIdx = _tzcnt_u32(mask); // position of 0 *or* a char that needs to be escaped
 
+			ensureSpace(esRIdx);
 			_mm256_storeu_si256(reinterpret_cast<__m256i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
 			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
 			outIdx += esRIdx;
@@ -343,6 +390,7 @@ private:
 
 		bool first = true;
 
+		ensureSpace(1);
 		out[outIdx++] = isArray ? '[' : '{';
 
 		while (true) {
@@ -352,14 +400,17 @@ private:
 			if (first) {
 				first = false;
 			} else {
+				ensureSpace(1);
 				out[outIdx++] = ',';
 			}
 
 			{ // Write name
 				if (!isArray) {
+					ensureSpace(1);
 					out[outIdx++] = '"';
 					writeEscapedChars();
 					inIdx++; // skip null terminator
+					ensureSpace(2);
 					out[outIdx++] = '"';
 					out[outIdx++] = ':';
 				} else {
@@ -376,13 +427,16 @@ private:
 				const int32_t size = readInt32LE();
 				if (size <= 0 || size > inLen - inIdx)
 					throw std::runtime_error("Bad string length");
+				ensureSpace(1);
 				out[outIdx++] = '"';
 				writeEscapedChars(size - 1);
 				inIdx++; // skip null terminator
+				ensureSpace(1);
 				out[outIdx++] = '"';
 				break;
 			}
 			case BSON_DATA_OID: {
+				ensureSpace(26);
 				// TODO mask load is 4,0.5, load is 2,0.5. Overrun the load where possible:
 				// if (not at end of buffer) {
 				//	 __m128i a = _mm_loadu_si128(reinterpret_cast<__m128i const*>(in + inIdx)); // 12B = 3x4B
@@ -397,6 +451,7 @@ private:
 				// if (not at end of buffer) {
 				//   _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), b);
 				// } else {
+				// Else use a 16B and an 8B
 				__m256i storemask = _mm256_set_epi32(0, 0, 0x80000000, 0x80000000,
 					0x80000000, 0x80000000, 0x80000000, 0x80000000); // 24B = 6x4B
 				_mm256_maskstore_epi32(reinterpret_cast<int*>(out + outIdx), storemask, b);
@@ -406,6 +461,7 @@ private:
 				break;
 			}
 			case BSON_DATA_INT: {
+				ensureSpace(11); // TODO use exact sizing in fast_itoa
 				const int32_t value = readInt32LE();
 				outIdx += fast_itoa(out + outIdx, value);
 				break;
@@ -413,9 +469,11 @@ private:
 			case BSON_DATA_NUMBER: {
 				const double value = readDoubleLE();
 				if (std::isfinite(value)) {
+					ensureSpace(20); // TODO
 					const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%.*f", DBL_DIG, value);
 					outIdx += n;
 				} else {
+					ensureSpace(4);
 					out[outIdx++] = 'n';
 					out[outIdx++] = 'u';
 					out[outIdx++] = 'l';
@@ -424,6 +482,7 @@ private:
 				break;
 			}
 			case BSON_DATA_DATE: {
+				ensureSpace(26);
 				const int64_t value = readInt64LE(); // BSON encodes UTC ms since Unix epoch
 				const time_t seconds = value / 1000;
 				const int32_t millis = value % 1000;
@@ -438,11 +497,13 @@ private:
 			case BSON_DATA_BOOLEAN: {
 				const uint8_t val = in[inIdx++];
 				if (val == 1) {
+					ensureSpace(4);
 					out[outIdx++] = 't';
 					out[outIdx++] = 'r';
 					out[outIdx++] = 'u';
 					out[outIdx++] = 'e';
 				} else {
+					ensureSpace(5);
 					out[outIdx++] = 'f';
 					out[outIdx++] = 'a';
 					out[outIdx++] = 'l';
@@ -463,6 +524,7 @@ private:
 				break;
 			}
 			case BSON_DATA_NULL: {
+				ensureSpace(4);
 				out[outIdx++] = 'n';
 				out[outIdx++] = 'u';
 				out[outIdx++] = 'l';
@@ -470,6 +532,7 @@ private:
 				break;
 			}
 			case BSON_DATA_LONG: {
+				ensureSpace(20); // TODO use exact sizing in fast_itoa
 				const int64_t value = readInt64LE();
 				outIdx += fast_itoa(out + outIdx, value);
 				break;
@@ -494,6 +557,7 @@ private:
 			}
 		}
 
+		ensureSpace(1);
 		out[outIdx++] = isArray ? ']' : '}';
 	}
 };
@@ -508,9 +572,7 @@ NAN_METHOD(bsonToJson) {
 	Transcoder trans;
 	trans.transcode(*data, data.length(), isArray);
 
-	v8::Local<v8::Value> buf = node::Buffer::Copy(iso, reinterpret_cast<char*>(trans.out), trans.outIdx).ToLocalChecked();
-
-	trans.neuter();
+	v8::Local<v8::Value> buf = node::Buffer::New(iso, reinterpret_cast<char*>(trans.out), trans.outIdx).ToLocalChecked();
 
 	info.GetReturnValue().Set(buf);
 }
