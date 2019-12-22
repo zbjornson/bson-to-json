@@ -134,32 +134,56 @@ inline static uint8_t getEscape(uint8_t c) {
 
 class Transcoder {
 public:
+	enum Mode {
+		/* Reallocate the output buffer as necessary to fit entire contents. */
+		REALLOC,
+		/* Pause when output buffer is full. Adjust `out`, `outIdx` and
+		 * `outLen`, then call `resume` when ready to continue.
+		 */
+		PAUSE
+	};
+
 	uint8_t* out = nullptr;
 	size_t outIdx = 0;
 	size_t outLen = 0;
 
-	void transcode(uint8_t* in_, size_t inLen_, bool isArray = true) {
+	void transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
+			size_t chunkSize = 0, Mode mode_ = Mode::REALLOC) {
+
 		in = in_;
 		inLen = inLen_;
 		inIdx = 0;
+		mode = mode_;
 
-		// Estimate outLen is 1.25x inLen. Expansion rates for values:
-		// ObjectId: 12B -> 24B plus 2 for quotes
-		// String: 5 for header + 1 per char -> 1 or 2 per char + 2 for quotes
-		// Int: 1+4 -> up to 11
-		// Long: 1+8 -> up to 20
-		// Number: 1+8 -> up to ???
-		// Date: 1+8 -> 24 plus 2 for quotes
-		// Boolean: 1+1 -> 4 or 5
-		// Null: 1+0 -> 4
-		// The maximum expansion ratio is 1:5 (for null), but averages 2.3x for
-		// mixed data or ~1x for string-heavy data.
-		resize((inLen * 10) >> 2); // Initially 2.5x
+		if (chunkSize == 0) {
+			// Estimate outLen at 2.5x inLen. Expansion rates for values:
+			// ObjectId: 12B -> 24B plus 2 for quotes
+			// String: 5 for header + 1 per char -> 1 or 2 per char + 2 for quotes
+			// Int: 1+4 -> up to 11
+			// Long: 1+8 -> up to 20
+			// Number: 1+8 -> up to ???
+			// Date: 1+8 -> 24 plus 2 for quotes
+			// Boolean: 1+1 -> 4 or 5
+			// Null: 1+0 -> 4
+			// The maximum expansion ratio is 1:5 (for null), but averages ~2.3x
+			// for mixed data or ~1x for string-heavy data.
+			chunkSize = (inLen * 10) >> 2;
+		}
+
+		resize(chunkSize);
 
 		transcodeObject(isArray);
 	}
 
-	void neuter() {
+	void resume() {
+		printf("resuming\n");
+	}
+
+	bool isDone() {
+		return inIdx == inLen;
+	}
+
+	void destroy() {
 		std::free(out);
 		out = nullptr;
 		outIdx = 0;
@@ -169,6 +193,7 @@ private:
 	const uint8_t* in = nullptr;
 	size_t inIdx = 0;
 	size_t inLen = 0;
+	Mode mode;
 
 	int64_t readInt64LE() {
 		int64_t v = reinterpret_cast<const int64_t*>(in + inIdx)[0]; // (UB, LE)
@@ -207,9 +232,13 @@ private:
 			return;
 		}
 
-		int status = resize((outLen * 3) >> 1);
-		if (status)
-			std::quick_exit(status);
+		if (mode == Mode::REALLOC) {
+			int status = resize((outLen * 3) >> 1);
+			if (status)
+				std::quick_exit(status);
+		} else {
+			printf("stopped\n");
+		}
 	}
 
 	// Writes n characters from in to out, escaping per JSON spec.
