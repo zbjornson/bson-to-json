@@ -591,14 +591,26 @@ private:
 	}
 };
 
+#include <iostream>
+
 Napi::Buffer<uint8_t> bsonToJson(const Napi::CallbackInfo& info) {
 	Napi::Env env = info.Env();
 
 	Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
-	bool isArray = info[1].As<Napi::Boolean>().Value();
+	bool isArray = info[1].ToBoolean().Value();
 
 	Transcoder trans;
-	trans.transcode(arr.Data(), arr.ByteLength(), isArray);
+	trans.transcode(arr.Data(), arr.ByteLength(), isArray, 512, Transcoder::Mode::PAUSE);
+	size_t max = 4;
+	do {
+		for (size_t i = 0; i < trans.outIdx; i++) std::cout << trans.out[i];
+		trans.outIdx = 0;
+		if (trans.isDone()) {
+			break;
+		} else {
+			trans.resume();
+		}
+	} while (max--);
 
 	Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx, [](Napi::Env, uint8_t* data) {
 		free(data);
