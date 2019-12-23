@@ -75,26 +75,34 @@ TODO:
 ### Iterator (Streaming)
 
 > ```ts
-> createIterator(bson: Uint8Array, options?: {chunkSize?: number, fixedBuffer?: boolean}): Iterator<Buffer>
+> new Transcoder(bson: Uint8Array,
+>     options?: ({chunkSize: number}|{fixedBuffer: ArrayBuffer})): Iterator<Buffer>
 > // (note that Buffers extend Uint8Arrays, so `bson` can be a Buffer)
 > ```
 
 * `chunkSize` can be specified to limit memory usage. The default value is
   estimated based on the input size and typical BSON expansion ratios such that
   a single output buffer will likely fit all of the data (i.e. the iterator will
-  yield a value once).
-* `fixedBuffer` if true will reuse the same backing memory for each iteration of
-  the iterator. With a relatively small `chunkSize`, this can give the best
-  performance (good cache usage and exactly one dynamic memory allocations).
+  usually yield a value once or a few times).
+* `fixedBuffer` if set to an instance of an ArrayBuffer, will decode into that
+  buffer in each iteration (the Buffer yielded in each iteration will reference
+  that same ArrayBuffer). This limits memory usage and can improve performance
+  (exactly one dynamic memory allocation).
 
 ```js
-const iterator = createIterator(data);
+const iterator = new Transcoder(data);
 for (const jsonBuf of iterator)
     res.write(jsonBuf); // res is an http server response or other writable stream
 ```
-With a chunk size and fixed buffer:
+With a chunk size to limit memory usage:
 ```js
-const iterator = createIterator(data, {chunkSize: 4096, fixedBuffer: true});
+const iterator = new Transcoder(data, {chunkSize: 4096});
+for (const jsonBuf of iterator)
+    res.write(jsonBuf);
+```
+With a fixed buffer to limit memory usage and potentially improve performance:
+```js
+const iterator = new Transcoder(data, {fixedBuffer: new ArrayBuffer(4096)});
 // jsonBuf is backed by the same memory in each iteration.
 for (const jsonBuf of iterator) {
     // Wait for res to consume the output buffer.
@@ -103,6 +111,6 @@ for (const jsonBuf of iterator) {
 ```
 
 * Pro: Never causes memory reallocation. When the output is full, it's yielded.
-* Pro: Can avoid all but one memory allocation by using `fixedBuffer: true`.
-* Pro: Can specify a chunk size if you want to limit memory usage.
+* Pro: Can avoid all but one memory allocation by using a fixed buffer.
+* Pro: Can specify a chunk size or fixed buffer if you want to limit memory usage.
 * Con: Slightly harder to use.

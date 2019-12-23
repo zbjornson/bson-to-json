@@ -7,6 +7,11 @@
 #include <cstdio> // sprintf
 #include <cfloat> // DBL_DIG
 #include <ctime> // strftime
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+
+#include <iostream>
 
 #ifdef _MSC_VER
 # include <intrin.h>
@@ -26,6 +31,8 @@ using std::uint8_t;
 using std::int32_t;
 using std::uint32_t;
 using std::int64_t;
+
+std::mutex m;
 
 constexpr uint8_t BSON_DATA_NUMBER = 1;
 constexpr uint8_t BSON_DATA_STRING = 2;
@@ -147,6 +154,8 @@ public:
 	size_t outIdx = 0;
 	size_t outLen = 0;
 
+	std::condition_variable cv;
+
 	void transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
 			size_t chunkSize = 0, Mode mode_ = Mode::REALLOC) {
 
@@ -176,10 +185,11 @@ public:
 	}
 
 	void resume() {
-		printf("resuming\n");
+		cv.notify_one();
 	}
 
 	bool isDone() {
+		std::cout << "remaining: " << (inLen - inIdx) << std::endl;
 		return inIdx == inLen;
 	}
 
@@ -237,7 +247,10 @@ private:
 			if (status)
 				std::quick_exit(status);
 		} else {
-			printf("stopped\n");
+			std::unique_lock<std::mutex> lk(m);
+			cv.notify_one();
+			//std::cout << "trans waiting..." << std::endl;
+			cv.wait(lk, [&] { return outIdx == 0; });
 		}
 	}
 
@@ -591,7 +604,101 @@ private:
 	}
 };
 
-#include <iostream>
+Napi::FunctionReference constructor;
+
+class BJTrans : public Napi::ObjectWrap<BJTrans> {
+public:
+
+	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
+		Napi::HandleScope scope(env);
+		Napi::Function func = DefineClass(env, "BJTrans", {
+			InstanceMethod(Napi::Symbol::WellKnown(env, "iterator"), &BJTrans::Iterator)
+			});
+		
+		constructor = Napi::Persistent(func);
+		constructor.SuppressDestruct();
+
+		exports.Set("BJTrans", func);
+		return exports;
+	}
+
+	BJTrans(const Napi::CallbackInfo& info) : Napi::ObjectWrap<BJTrans>(info) {
+		Napi::Env env = info.Env();
+		Napi::HandleScope scope(env);
+		Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
+		bool isArray = info[1].ToBoolean().Value();
+
+		if (info.Length() >= 2 && info[2].IsObject()) {
+			Napi::Object options = info[2].ToObject();
+
+			if (options.Has("chunkSize")) {
+				Napi::Value csOpt = options.Get("chunkSize");
+				if (csOpt.IsNumber()) {
+					chunkSize = csOpt.As<Napi::Number>().Uint32Value();
+				} else {
+					Napi::TypeError::New(env, "chunkSize must be a number").ThrowAsJavaScriptException();
+				}
+			}
+
+			if (options.Has("fixedBuffer")) {
+				fixedBuffer = options.Get("fixedBuffer").ToBoolean().Value();
+			}
+		}
+
+		worker = std::thread { &Transcoder::transcode, &trans, arr.Data(), arr.ByteLength(), isArray, chunkSize, Transcoder::Mode::PAUSE };
+	}
+
+private:
+	Transcoder trans;
+	std::thread worker;
+	bool fixedBuffer = false;
+	size_t chunkSize = 0;
+	bool final = false;
+
+	Napi::Value BJTrans::Iterator(const Napi::CallbackInfo& info) {
+		Napi::Env env = info.Env();
+		Napi::HandleScope scope(env);
+		Napi::Object rv = Napi::Object::New(env);
+
+		rv.Set("next", Napi::Function::New(env, [&](const Napi::CallbackInfo& info) -> Napi::Object {
+			Napi::Env env = info.Env();
+			Napi::HandleScope scope(env);
+
+			Napi::Object rv = Napi::Object::New(env);
+			std::cout << "next...";
+			if (final) {
+				std::cout << "[final]";
+				rv.Set("done", true);
+				worker.join();
+				std::cout << "[joined]";
+			} else {
+				std::unique_lock<std::mutex> lk(m);
+				trans.outIdx = 0;
+				trans.resume();
+				trans.cv.wait(lk, [&] { return trans.outIdx > 0 || trans.isDone(); });
+				std::cout << "waited...";
+				if (trans.isDone()) {
+					std::cout << "[isDone!]";
+					final = true;
+				}
+
+				Napi::Buffer<uint8_t> buf;
+				if (fixedBuffer) {
+					// TODO we need to register this and let JS own it
+					buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx);
+				} else {
+					buf = Napi::Buffer<uint8_t>::Copy(env, trans.out, trans.outIdx);
+				}
+				rv.Set("value", buf);
+				rv.Set("done", false);
+			}
+			std::cout << std::endl;
+			return rv;
+		}, "next"));
+
+		return rv;
+	}
+};
 
 Napi::Buffer<uint8_t> bsonToJson(const Napi::CallbackInfo& info) {
 	Napi::Env env = info.Env();
@@ -600,17 +707,7 @@ Napi::Buffer<uint8_t> bsonToJson(const Napi::CallbackInfo& info) {
 	bool isArray = info[1].ToBoolean().Value();
 
 	Transcoder trans;
-	trans.transcode(arr.Data(), arr.ByteLength(), isArray, 512, Transcoder::Mode::PAUSE);
-	size_t max = 4;
-	do {
-		for (size_t i = 0; i < trans.outIdx; i++) std::cout << trans.out[i];
-		trans.outIdx = 0;
-		if (trans.isDone()) {
-			break;
-		} else {
-			trans.resume();
-		}
-	} while (max--);
+	trans.transcode(arr.Data(), arr.ByteLength(), isArray);
 
 	Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx, [](Napi::Env, uint8_t* data) {
 		free(data);
@@ -621,6 +718,7 @@ Napi::Buffer<uint8_t> bsonToJson(const Napi::CallbackInfo& info) {
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
 	exports.Set(Napi::String::New(env, "bsonToJson"), Napi::Function::New(env, bsonToJson));
+	BJTrans::Init(env, exports);
 
 	return exports;
 }
