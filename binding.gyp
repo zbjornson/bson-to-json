@@ -24,6 +24,7 @@
       ],
       "msvs_settings": {
         "VCCLCompilerTool": {
+          "AdditionalOptions": "/std:c++17 %(AdditionalOptions)",
           "EnableEnhancedInstructionSet": 3 # /arch:AVX
           # 0-not set, 1-sse, 2-sse2, 3-avx, 4-ia32, 5-avx2
         }

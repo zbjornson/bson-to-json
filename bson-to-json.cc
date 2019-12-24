@@ -32,8 +32,6 @@ using std::int32_t;
 using std::uint32_t;
 using std::int64_t;
 
-std::mutex m;
-
 constexpr uint8_t BSON_DATA_NUMBER = 1;
 constexpr uint8_t BSON_DATA_STRING = 2;
 constexpr uint8_t BSON_DATA_OBJECT = 3;
@@ -154,9 +152,23 @@ public:
 	size_t outIdx = 0;
 	size_t outLen = 0;
 
-	std::condition_variable cv;
-
-	void transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
+	/// <summary>
+	/// Transcodes the BSON document to JSON. Call once per lifetime of the
+	/// Transcoder instance.
+	/// </summary>
+	/// <param name="in_">BSON document</param>
+	/// <param name="inLen_">Length of input</param>
+	/// <param name="isArray">Whether or not the document is an array.</param>
+	/// <param name="chunkSize">
+	/// Initial size of the output buffer. Setting to 0 currently uses 2.5x
+	/// the inLen.
+	/// </param>
+	/// <param name="mode_">What to do when the output buffer is full.</param>
+	/// <returns>
+	/// 0 on success.
+	/// ENOMEM if failed to allocate. (Note: currently aborts if realloc fails.)
+	/// </returns>
+	int transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
 			size_t chunkSize = 0, Mode mode_ = Mode::REALLOC) {
 
 		in = in_;
@@ -181,15 +193,33 @@ public:
 
 		resize(chunkSize);
 
+		if (mode == Mode::PAUSE) {
+			std::unique_lock<std::mutex> lk(m);
+			outIdx = outLen + 1;
+			cv.wait(lk, [&] { return outIdx == 0; });
+		}
+
 		transcodeObject(isArray);
+
+		if (mode == Mode::PAUSE)
+			cv.notify_one();
+		
+		return 0;
+	}
+
+	void setOutIdx(size_t to) {
+		std::unique_lock<std::mutex> lk(m);
+		outIdx = to;
 	}
 
 	void resume() {
 		cv.notify_one();
+		std::unique_lock<std::mutex> lk(m);
+		cv.wait(lk, [&] { return outIdx > 0 || isDone(); });
 	}
 
 	bool isDone() {
-		std::cout << "remaining: " << (inLen - inIdx) << std::endl;
+		//std::cout << "remaining: " << (inLen - inIdx) << std::endl;
 		return inIdx == inLen;
 	}
 
@@ -204,6 +234,8 @@ private:
 	size_t inIdx = 0;
 	size_t inLen = 0;
 	Mode mode;
+	std::mutex m;
+	std::condition_variable cv;
 
 	int64_t readInt64LE() {
 		int64_t v = reinterpret_cast<const int64_t*>(in + inIdx)[0]; // (UB, LE)
@@ -225,16 +257,16 @@ private:
 		return v;
 	}
 
-	int resize(size_t to) {
+	void resize(size_t to) {
 		// printf("resizing from %d to %d\n", outLen, to);
 		uint8_t* oldOut = out;
-		out = static_cast<uint8_t*>(std::realloc(static_cast<void*>(out), to));
+		out = static_cast<uint8_t*>(std::realloc(out, to));
 		if (out == nullptr) {
 			std::free(oldOut);
-			return ENOMEM;
+			throw std::runtime_error("Failed to reallocate output.");
 		}
+		printf("allocated %p\n", out);
 		outLen = to;
-		return 0;
 	}
 
 	void ensureSpace(size_t n) {
@@ -243,13 +275,10 @@ private:
 		}
 
 		if (mode == Mode::REALLOC) {
-			int status = resize((outLen * 3) >> 1);
-			if (status)
-				std::quick_exit(status);
+			resize((outLen * 3) >> 1);
 		} else {
-			std::unique_lock<std::mutex> lk(m);
 			cv.notify_one();
-			//std::cout << "trans waiting..." << std::endl;
+			std::unique_lock<std::mutex> lk(m);
 			cv.wait(lk, [&] { return outIdx == 0; });
 		}
 	}
@@ -426,7 +455,7 @@ private:
 	}
 
 	void transcodeObject(bool isArray) {
-		size_t size = readInt32LE();
+		const int32_t size = readInt32LE();
 		if (size < 5 || size > inLen) // + inIdx?
 			throw std::runtime_error("BSON size exceeds input length.");
 
@@ -657,46 +686,39 @@ private:
 
 	Napi::Value BJTrans::Iterator(const Napi::CallbackInfo& info) {
 		Napi::Env env = info.Env();
-		Napi::HandleScope scope(env);
-		Napi::Object rv = Napi::Object::New(env);
 
-		rv.Set("next", Napi::Function::New(env, [&](const Napi::CallbackInfo& info) -> Napi::Object {
+		Napi::Object iter = Napi::Object::New(env);
+
+		iter.Set("next", Napi::Function::New(env, [&](const Napi::CallbackInfo& info) -> Napi::Object {
 			Napi::Env env = info.Env();
-			Napi::HandleScope scope(env);
 
 			Napi::Object rv = Napi::Object::New(env);
-			std::cout << "next...";
+
 			if (final) {
-				std::cout << "[final]";
 				rv.Set("done", true);
 				worker.join();
-				std::cout << "[joined]";
 			} else {
-				std::unique_lock<std::mutex> lk(m);
-				trans.outIdx = 0;
+				trans.setOutIdx(0);
 				trans.resume();
-				trans.cv.wait(lk, [&] { return trans.outIdx > 0 || trans.isDone(); });
-				std::cout << "waited...";
-				if (trans.isDone()) {
-					std::cout << "[isDone!]";
+
+				if (trans.isDone())
 					final = true;
-				}
 
 				Napi::Buffer<uint8_t> buf;
 				if (fixedBuffer) {
 					// TODO we need to register this and let JS own it
-					buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx);
+					buf = Napi::Buffer<uint8_t>::Copy(env, trans.out, trans.outIdx);
 				} else {
 					buf = Napi::Buffer<uint8_t>::Copy(env, trans.out, trans.outIdx);
 				}
 				rv.Set("value", buf);
 				rv.Set("done", false);
 			}
-			std::cout << std::endl;
+
 			return rv;
 		}, "next"));
 
-		return rv;
+		return iter;
 	}
 };
 
@@ -710,7 +732,8 @@ Napi::Buffer<uint8_t> bsonToJson(const Napi::CallbackInfo& info) {
 	trans.transcode(arr.Data(), arr.ByteLength(), isArray);
 
 	Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx, [](Napi::Env, uint8_t* data) {
-		free(data);
+		printf("freeing %p\n", data);
+		std::free(data);
 	});
 
 	return buf;
