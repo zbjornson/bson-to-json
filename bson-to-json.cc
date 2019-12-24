@@ -164,19 +164,16 @@ public:
 	/// the inLen.
 	/// </param>
 	/// <param name="mode_">What to do when the output buffer is full.</param>
-	/// <returns>
-	/// 0 on success.
-	/// ENOMEM if failed to allocate. (Note: currently aborts if realloc fails.)
-	/// </returns>
-	int transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
-			size_t chunkSize = 0, Mode mode_ = Mode::REALLOC) {
+	/// <param name="fixedOut">With Mode::PAUSE, output buffer to reuse.</param>
+	void transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
+			size_t chunkSize = 0, Mode mode_ = Mode::REALLOC, uint8_t* fixedOut = nullptr) {
 
 		in = in_;
 		inLen = inLen_;
 		inIdx = 0;
 		mode = mode_;
 
-		if (chunkSize == 0) {
+		if (chunkSize == 0 && fixedOut == nullptr) {
 			// Estimate outLen at 2.5x inLen. Expansion rates for values:
 			// ObjectId: 12B -> 24B plus 2 for quotes
 			// String: 5 for header + 1 per char -> 1 or 2 per char + 2 for quotes
@@ -191,7 +188,12 @@ public:
 			chunkSize = (inLen * 10) >> 2;
 		}
 
-		resize(chunkSize);
+		if (fixedOut == nullptr) {
+			resize(chunkSize);
+		} else {
+			out = fixedOut;
+			outLen = chunkSize;
+		}
 
 		if (mode == Mode::PAUSE) {
 			std::unique_lock<std::mutex> lk(m);
@@ -203,8 +205,6 @@ public:
 
 		if (mode == Mode::PAUSE)
 			cv.notify_one();
-		
-		return 0;
 	}
 
 	void setOutIdx(size_t to) {
@@ -656,6 +656,7 @@ public:
 		Napi::HandleScope scope(env);
 		Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
 		bool isArray = info[1].ToBoolean().Value();
+		uint8_t* out = nullptr;
 
 		if (info.Length() >= 2 && info[2].IsObject()) {
 			Napi::Object options = info[2].ToObject();
@@ -670,11 +671,19 @@ public:
 			}
 
 			if (options.Has("fixedBuffer")) {
-				fixedBuffer = options.Get("fixedBuffer").ToBoolean().Value();
+				auto val = options.Get("fixedBuffer");
+				if (val.IsArrayBuffer()) {
+					auto ab = options.Get("fixedBuffer").As<Napi::ArrayBuffer>();
+					chunkSize = ab.ByteLength();
+					out = static_cast<uint8_t*>(ab.Data());
+					fixedBuffer = true;
+				} else {
+					Napi::TypeError::New(env, "fixedBuffer must be an ArrayBuffer").ThrowAsJavaScriptException();
+				}
 			}
 		}
 
-		worker = std::thread { &Transcoder::transcode, &trans, arr.Data(), arr.ByteLength(), isArray, chunkSize, Transcoder::Mode::PAUSE };
+		worker = std::thread { &Transcoder::transcode, &trans, arr.Data(), arr.ByteLength(), isArray, chunkSize, Transcoder::Mode::PAUSE, out };
 	}
 
 private:
@@ -706,8 +715,7 @@ private:
 
 				Napi::Buffer<uint8_t> buf;
 				if (fixedBuffer) {
-					// TODO we need to register this and let JS own it
-					buf = Napi::Buffer<uint8_t>::Copy(env, trans.out, trans.outIdx);
+					buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx, [](Napi::Env, uint8_t* data) {});
 				} else {
 					buf = Napi::Buffer<uint8_t>::Copy(env, trans.out, trans.outIdx);
 				}

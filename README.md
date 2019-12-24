@@ -85,9 +85,9 @@ TODO:
   a single output buffer will likely fit all of the data (i.e. the iterator will
   usually yield a value once or a few times).
 * `fixedBuffer` if set to an instance of an ArrayBuffer, will decode into that
-  buffer in each iteration (the Buffer yielded in each iteration will reference
-  that same ArrayBuffer). This limits memory usage and can improve performance
-  (exactly one dynamic memory allocation).
+  memory in each iteration (the Buffer yielded in each iteration will be backed
+  by that same ArrayBuffer). This limits memory usage and can improve
+  performance (exactly one dynamic memory allocation).
 
 ```js
 const iterator = new Transcoder(data);
