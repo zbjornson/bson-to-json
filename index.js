@@ -1,7 +1,7 @@
 //@ts-check
 'use strict';
 
-const Buffer = require("buffer").Buffer;
+const {transcode: transcodeBytes, Buffer} = require("buffer");
 const Long = require("long");
 
 const BSON_DATA_NUMBER = 1;
@@ -34,20 +34,23 @@ const OPENCURL = '{'.charCodeAt(0);
 const CLOSESQ = ']'.charCodeAt(0);
 const CLOSECURL = '}'.charCodeAt(0);
 const BACKSLASH = '\\'.charCodeAt(0);
+const LOWERCASE_U = 'u'.charCodeAt(0);
+const ZERO = '0'.charCodeAt(0);
+const ONE = '1'.charCodeAt(0);
 
 const TRUE = Buffer.from("true");
 const FALSE = Buffer.from("false");
 const NULL = Buffer.from("null");
 
+// ECMA-262 Table 65 (sec. 24.5.2.2)
 const ESCAPES = {
-	8: 'b'.charCodeAt(0),
-	9: 't'.charCodeAt(0),
-	10: 'n'.charCodeAt(0),
-	12: 'f'.charCodeAt(0),
-	13: 'r'.charCodeAt(0),
-	34: 34, // "
-	47: 47, // /
-	92: 92 // \
+	0x08: 'b'.charCodeAt(0),
+	0x09: 't'.charCodeAt(0),
+	0x0a: 'n'.charCodeAt(0),
+	0x0c: 'f'.charCodeAt(0),
+	0x0d: 'r'.charCodeAt(0),
+	0x22: '"'.charCodeAt(0),
+	0x5c: '\\'.charCodeAt(0)
 };
 
 function readInt32LE(buffer, index) {
@@ -69,6 +72,10 @@ function readDoubleLE(buffer, index) {
 	tb[6] = buffer[index + 6];
 	tb[7] = buffer[index + 7];
 	return ta[0];
+}
+
+function hex(nibble) {
+	return nibble + (nibble < 10 ? 48 : 87);
 }
 
 class Transcoder {
@@ -100,8 +107,7 @@ class Transcoder {
 
 	/**
 	 * Writes the bytes in `str` from `start` to `end` (exclusive) into `out`,
-	 * escaping per JSON spec.
-	 * TODO \uXXXX are not escaped
+	 * escaping per ECMA-262 sec 24.5.2.2 (well-formed).
 	 * @param {Buffer} out
 	 * @param {Buffer} str
 	 * @param {number} start
@@ -112,13 +118,78 @@ class Transcoder {
 		for (let i = start; i < end; i++) {
 			const c = str[i];
 			let xc;
-			if (c > 47 && c !== 92) {
+			if (c >= 0x20 && c !== 0x22 && c !== 0x5c && c <= 0x7e) { // no escape
 				out[this.outIdx++] = c;
-			} else if ((xc = ESCAPES[c])) {
+			} else if ((xc = ESCAPES[c])) { // single char escape
 				out[this.outIdx++] = BACKSLASH;
 				out[this.outIdx++] = xc;
-			} else {
-				out[this.outIdx++] = c;
+			} else if (c < 0x20) { // control
+				out[this.outIdx++] = BACKSLASH;
+				out[this.outIdx++] = LOWERCASE_U;
+				out[this.outIdx++] = ZERO;
+				out[this.outIdx++] = ZERO;
+				out[this.outIdx++] = (c & 0xF0) ? ONE : ZERO;
+				out[this.outIdx++] = hex(c & 0xF);
+			} else { // utf16
+				let c0, c1, c2, c3;
+				let nc, wc;
+				if (c <= 0xdf) nc = 1, wc = c & 0x1f;
+				else if (c <= 0xef) nc = 2, wc = c & 0x0f;
+				else if (c <= 0xf7) nc = 3, wc = c & 0x07;
+
+				if (i + nc >= end)
+					throw new Error("Ill-formed string (1).");
+
+				while (nc--) wc = (wc << 6) + (str[++i] & 0x3f);
+				// assert((wc < 0xd800 || wc > 0xdfff) && wc <= 0x10ffff))
+				if (wc > 0xffff) {
+					wc -= 0x10000;
+					const hi = (wc >> 10) + 0xd800;
+					const lo = (wc & 0x3ff) + 0xdc00;
+					c0 = hi >> 8;
+					c1 = hi & 0xff;
+					c2 = lo >> 8;
+					c3 = lo & 0xff;
+				} else {
+					c0 = ZERO;
+					c1 = ZERO;
+					c2 = wc >> 8;
+					c3 = wc & 0xff;
+				}
+				
+				let needEsc = true;
+
+				if (0xd800 <= wc && wc <= 0xd8ff && // is leading surrogate
+						i + 1 < end) { // next character exists
+					const cN = str[i + 1];
+					let nc, wc;
+					if (cN <= 0xdf) nc = 1, wc = cN & 0x1f;
+					else if (cN <= 0xef) nc = 2, wc = cN & 0x0f;
+					else if (cN <= 0xf7) nc = 3, wc = cN & 0x07;
+
+					if (i + 1 + nc >= end)
+						throw new Error("Ill-formed string (2).");
+					
+					for (let j = i + 1; j < i + 1 + nc; j++)
+						wc = (wc << 6) + (str[j] & 0x3f);
+					
+					wc &= 0xffff;
+
+					if (0xdc00 <= wc && wc <= 0xdfff) { // next is trailing surrogate
+						needEsc = false;
+					}
+				}
+				
+				if (needEsc) {
+					out[this.outIdx++] = BACKSLASH;
+					out[this.outIdx++] = LOWERCASE_U;
+				}
+
+				// assert(0xd800 <= wc && wc <= 0xdfff);
+				out[this.outIdx++] = hex(c0);
+				out[this.outIdx++] = hex(c1);
+				out[this.outIdx++] = hex(c2);
+				out[this.outIdx++] = hex(c3);
 			}
 		}
 	}
@@ -134,8 +205,8 @@ class Transcoder {
 			const byte = buffer[i];
 			const hi = byte >>> 4;
 			const lo = byte & 0xF;
-			out[this.outIdx++] = hi + (hi < 10 ? 48 : 87);
-			out[this.outIdx++] = lo + (lo < 10 ? 48 : 87);
+			out[this.outIdx++] = hex(hi);
+			out[this.outIdx++] = hex(lo);
 		}
 	}
 

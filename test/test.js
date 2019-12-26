@@ -45,13 +45,42 @@ describe("bson2json - JS", function () {
 		// 1152921500580315100.
 		expected.long = doc1.long.toNumber();
 
-		// Escaping:
-		assert.ok(jsonBuffer.toString().startsWith('{"string":"string\\tdata\\n'));
-
 		assert.deepEqual(
 			JSON.parse(jsonBuffer.toString()),
 			expected
 		);
+	});
+
+	it("escapes strings properly", function () {
+		const str = Buffer.allocUnsafe(0x7e);
+		for (let i = 0; i < 0x7e; i++) str[i] = i;
+		const obj = {str: str.toString()};
+
+		const bsonBuffer = bson.serialize(obj);
+		const jsonBuffer = bsonToJson(bsonBuffer, false);
+		
+		const expected = JSON.stringify(obj);
+
+		assert.deepEqual(jsonBuffer, Buffer.from(expected));
+		assert.equal(jsonBuffer.toString(), expected);
+	});
+
+	it("escapes strings properly (well-formed JSON.stringify)", function () {
+		// https://github.com/tc39/proposal-well-formed-stringify
+		const s1 = "𝌆";
+		const s2 = "\uD834\udf06";
+		const s3 = "\uDF06\uD834";
+		const s4 = "\uDEAD";
+		const obj = {s1, s2, s3, s4};
+
+		const expected = JSON.stringify(obj);
+		console.log(expected);
+
+		const bsonBuffer = bson.serialize(obj);
+		console.log(bsonBuffer);
+		const jsonBuffer = bsonToJson(bsonBuffer, false);
+
+		console.log(jsonBuffer.toString());
 	});
 });
 
@@ -66,9 +95,6 @@ describe("bson2json - C++", function () {
 		// The JSON string will contain 1152921500580315135, which parses to
 		// 1152921500580315100.
 		expected.long = doc1.long.toNumber();
-
-		// Escaping:
-		assert.ok(jsonBuffer.toString().startsWith('{"string":"string\\tdata\\n'));
 
 		assert.deepEqual(
 			JSON.parse(jsonBuffer.toString()),

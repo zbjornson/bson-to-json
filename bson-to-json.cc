@@ -287,6 +287,8 @@ private:
 	// Portable/scalar
 	void writeEscapedCharsBaseline(size_t n) {
 		const size_t end = inIdx + n;
+		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
+		// true (worst-case expansion is 6x).
 		ensureSpace(n);
 		while (inIdx < end) {
 			uint8_t xc;
