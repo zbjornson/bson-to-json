@@ -107,7 +107,16 @@ class Transcoder {
 
 	/**
 	 * Writes the bytes in `str` from `start` to `end` (exclusive) into `out`,
-	 * escaping per ECMA-262 sec 24.5.2.2 (well-formed).
+	 * escaping per ECMA-262 sec 24.5.2.2.
+	 *
+	 * Regarding [well-formed
+	 * stringify](https://github.com/tc39/proposal-well-formed-stringify), the
+	 * js-bson encoder uses Node.js' `buffer.write(value, index, "utf8")`, which
+	 * converts unpaired surrogates to the byte sequence `ef bf bd`, which
+	 * decodes to `0xfffd` (� REPLACEMENT CHARACTER, used to replace an unknown,
+	 * unrecognized or unrepresentable character). Thus there's nothing we can
+	 * do in the decoder to instead emit escape sequences.
+	 *
 	 * @param {Buffer} out
 	 * @param {Buffer} str
 	 * @param {number} start
@@ -118,78 +127,18 @@ class Transcoder {
 		for (let i = start; i < end; i++) {
 			const c = str[i];
 			let xc;
-			if (c >= 0x20 && c !== 0x22 && c !== 0x5c && c <= 0x7e) { // no escape
+			if (c >= 0x20 && c !== 0x22 && c !== 0x5c) { // no escape
 				out[this.outIdx++] = c;
 			} else if ((xc = ESCAPES[c])) { // single char escape
 				out[this.outIdx++] = BACKSLASH;
 				out[this.outIdx++] = xc;
-			} else if (c < 0x20) { // control
+			} else { // c < 0x20, control
 				out[this.outIdx++] = BACKSLASH;
 				out[this.outIdx++] = LOWERCASE_U;
 				out[this.outIdx++] = ZERO;
 				out[this.outIdx++] = ZERO;
 				out[this.outIdx++] = (c & 0xF0) ? ONE : ZERO;
 				out[this.outIdx++] = hex(c & 0xF);
-			} else { // utf16
-				let c0, c1, c2, c3;
-				let nc, wc;
-				if (c <= 0xdf) nc = 1, wc = c & 0x1f;
-				else if (c <= 0xef) nc = 2, wc = c & 0x0f;
-				else if (c <= 0xf7) nc = 3, wc = c & 0x07;
-
-				if (i + nc >= end)
-					throw new Error("Ill-formed string (1).");
-
-				while (nc--) wc = (wc << 6) + (str[++i] & 0x3f);
-				// assert((wc < 0xd800 || wc > 0xdfff) && wc <= 0x10ffff))
-				if (wc > 0xffff) {
-					wc -= 0x10000;
-					const hi = (wc >> 10) + 0xd800;
-					const lo = (wc & 0x3ff) + 0xdc00;
-					c0 = hi >> 8;
-					c1 = hi & 0xff;
-					c2 = lo >> 8;
-					c3 = lo & 0xff;
-				} else {
-					c0 = ZERO;
-					c1 = ZERO;
-					c2 = wc >> 8;
-					c3 = wc & 0xff;
-				}
-				
-				let needEsc = true;
-
-				if (0xd800 <= wc && wc <= 0xd8ff && // is leading surrogate
-						i + 1 < end) { // next character exists
-					const cN = str[i + 1];
-					let nc, wc;
-					if (cN <= 0xdf) nc = 1, wc = cN & 0x1f;
-					else if (cN <= 0xef) nc = 2, wc = cN & 0x0f;
-					else if (cN <= 0xf7) nc = 3, wc = cN & 0x07;
-
-					if (i + 1 + nc >= end)
-						throw new Error("Ill-formed string (2).");
-					
-					for (let j = i + 1; j < i + 1 + nc; j++)
-						wc = (wc << 6) + (str[j] & 0x3f);
-					
-					wc &= 0xffff;
-
-					if (0xdc00 <= wc && wc <= 0xdfff) { // next is trailing surrogate
-						needEsc = false;
-					}
-				}
-				
-				if (needEsc) {
-					out[this.outIdx++] = BACKSLASH;
-					out[this.outIdx++] = LOWERCASE_U;
-				}
-
-				// assert(0xd800 <= wc && wc <= 0xdfff);
-				out[this.outIdx++] = hex(c0);
-				out[this.outIdx++] = hex(c1);
-				out[this.outIdx++] = hex(c2);
-				out[this.outIdx++] = hex(c3);
 			}
 		}
 	}

@@ -119,21 +119,19 @@ inline static __m256i encodeHex(__m128i val) {
 	return _mm256_shuffle_epi8(HEX_LUTR, bytes);
 }
 
-constexpr uint8_t NOESC = 91;
 // Returns the char to use to escape c if it requires escaping, or returns
 // NOESC if it does not require escaping. NOESC is a valid character in a JSON
 // string and must have been handled already; see writeEscapedChars.
 inline static uint8_t getEscape(uint8_t c) {
 	switch (c) {
-	case 8: return 'b';
-	case 9: return 't';
-	case 10: return 'n';
-	case 12: return 'f';
-	case 13: return 'r';
-	case 34: return c; // "
-	case 47: return c; // /
-	case 92: return c; /* \ */
-	default: return NOESC;
+	case 0x08: return 'b';
+	case 0x09: return 't';
+	case 0x0a: return 'n';
+	case 0x0c: return 'f';
+	case 0x0d: return 'r';
+	case 0x22: return c; // "
+	case 0x5c: return c; /* \ */
+	default: return 0;
 	}
 }
 
@@ -283,7 +281,7 @@ private:
 		}
 	}
 
-	// Writes n characters from in to out, escaping per JSON spec.
+	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
 	// Portable/scalar
 	void writeEscapedCharsBaseline(size_t n) {
 		const size_t end = inIdx + n;
@@ -293,14 +291,20 @@ private:
 		while (inIdx < end) {
 			uint8_t xc;
 			const uint8_t c = in[inIdx++];
-			if (c > 47 && c != 92) {
+			if (c >= 0x20 && c != 0x22 && c != 0x5c) {
 				out[outIdx++] = c;
-			} else if ((xc = getEscape(c)) != NOESC) {
+			} else if ((xc = getEscape(c))) { // single char escape
 				ensureSpace(end - inIdx + 1);
 				out[outIdx++] = '\\';
 				out[outIdx++] = xc;
-			} else {
-				out[outIdx++] = c;
+			} else { // c < 0x20, control
+				ensureSpace(end - inIdx + 5);
+				out[outIdx++] = '\\';
+				out[outIdx++] = 'u';
+				out[outIdx++] = '0';
+				out[outIdx++] = '0';
+				out[outIdx++] = (c & 0xf0) ? '1' : '0';
+				out[outIdx++] = 'h'; // TODO
 			}
 		}
 	}

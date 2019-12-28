@@ -15,8 +15,7 @@ medium objects (9MB BSON):
 <sup>1</sup> `BSON.deserialize` is the [official MongoDB js-bson implementation](https://github.com/mongodb/js-bson).
 
 Major reasons it's fast:
-* No UTF8 string decoding. String bytes can be copied almost directly (with JSON
-  escaping).
+* Direct UTF8 to JSON-escaped string transcoding.
 * No waste temporary objects created for the GC to clean up.
 * SSE4.2 or AVX2-accelerated JSON string escaping.
 * AVX2-accelerated ObjectId hex string encoding, using the technique from
@@ -35,7 +34,6 @@ TODO:
 * Try to make the `isArray` parameter optional.
 * Error handling (uses C++ exceptions but Node.js disables C++ exceptions)
 * Optimize number (double) (currently uses sprintf)
-* Escape \\uxxx in strings
 
 ## Benchmarks by BSON type (ops/sec):
 
