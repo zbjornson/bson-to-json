@@ -23,17 +23,14 @@ const doc1 = {
 	nan: NaN, // serializes to null
 	infinity: Infinity, // serializes to null
 	negInfinity: -Infinity, // serializes to null
-	arrayOfUndef: [1, undefined] // undefined is preserved
+	arrayOfUndef: [1, undefined] // undefined is preserved (as null)
 };
 
 // For using C++ debugger
 global.describe = global.describe || function describe(label, fn) { fn(); };
 global.it = global.it || function it(label, fn) { fn(); };
 
-// TODO {a: NaN, b: Infinity, c: -Infinity} -> {a: null, b: null, c: null}
-// TODO {arr: [1, undefined]} -> '{"arr": [1, null]}'
-
-for (const [name, loc] of [["JS", "../index.js"]/*, ["C++", "../build/release/bsonToJson.node"]*/]) {
+for (const [name, loc] of [["JS", "../index.js"], ["C++", "../build/Release/bsonToJson.node"]]) {
 	const {bsonToJson} = require(loc);
 
 	describe(`bson2json - ${name}`, function () {
@@ -60,7 +57,7 @@ for (const [name, loc] of [["JS", "../index.js"]/*, ["C++", "../build/release/bs
 
 			const bsonBuffer = bson.serialize(obj);
 			const jsonBuffer = bsonToJson(bsonBuffer, false);
-
+			
 			assert.deepEqual(jsonBuffer, Buffer.from(JSON.stringify(obj)));
 			assert.equal(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
 		});
@@ -77,9 +74,9 @@ for (const [name, loc] of [["JS", "../index.js"]/*, ["C++", "../build/release/bs
 			const jsonBuffer = bsonToJson(bsonBuffer, false);
 
 			// Unlike the previous test, this can't use JSON.stringify for the
-			// expectation because the lone surrogates are encoded into the BSON as
-			// replacement characters.
-			assert.deepEqual(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
+			// expectation because the lone surrogates are encoded into the BSON
+			// as replacement characters.
+			assert.equal(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
 		});
 	});
 }
