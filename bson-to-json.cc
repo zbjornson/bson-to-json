@@ -113,6 +113,14 @@ inline static uint8_t getEscape(uint8_t c) {
 	}
 }
 
+const char HEX_DIGITS[] = "0123456789abcdef";
+
+inline static constexpr uint8_t hexNib(uint8_t nib) {
+	// These appear equally fast.
+	return HEX_DIGITS[nib];
+	// return nib + (nib < 10 ? 48 : 87);
+}
+
 enum class ISA {
 	BASELINE,
 	SSE2,
@@ -226,21 +234,19 @@ private:
 	std::condition_variable cv;
 
 	inline int64_t readInt64LE() {
-		int64_t v = reinterpret_cast<const int64_t*>(in + inIdx)[0]; // (UB, LE)
+		int64_t v = *reinterpret_cast<const int64_t*>(in + inIdx); // (UB, LE)
 		inIdx += 8;
 		return v;
 	}
 
-	inline int32_t readInt32LE(bool advance = true) {
-		int32_t v = in[inIdx] | (in[inIdx + 1] << 8) |
-			(in[inIdx + 2] << 16) | (in[inIdx + 3] << 24);
-		if (advance)
-			inIdx += 4;
+	inline int32_t readInt32LE() {
+		int32_t v = *reinterpret_cast<const int32_t*>(in + inIdx); // (UB, LE)
+		inIdx += 4;
 		return v;
 	}
 
 	inline double readDoubleLE() {
-		double v = reinterpret_cast<const double*>(in + inIdx)[0]; // (UB, LE)
+		double v = *reinterpret_cast<const double*>(in + inIdx); // (UB, LE)
 		inIdx += 8;
 		return v;
 	}
@@ -278,16 +284,12 @@ private:
 		out[outIdx++] = '0';
 		out[outIdx++] = '0';
 		out[outIdx++] = (c & 0xf0) ? '1' : '0';
-		uint8_t lo = c & 0xf;
-		out[outIdx++] = lo + (lo < 10 ? 48 : 87);
+		out[outIdx++] = hexNib(c & 0xf);
 	}
 
 	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
 	template<ISA isa>
-	void writeEscapedChars(size_t n) {}
-
-	template<>
-	void writeEscapedChars<ISA::BASELINE>(size_t n) {
+	void writeEscapedChars(size_t n) {
 		const size_t end = inIdx + n;
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
 		// true (worst-case expansion is 6x).
@@ -452,16 +454,12 @@ private:
 
 	// Writes the null-terminated string from in to out, escaping per JSON spec.
 	template<ISA isa>
-	void writeEscapedChars() {}
-
-	template<>
-	void writeEscapedChars<ISA::BASELINE>() {
+	void writeEscapedChars() {
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
 		// true (worst-case expansion is 6x).
 		uint8_t c;
 		while ((c = in[inIdx++])) {
 			uint8_t xc;
-			const uint8_t c = in[inIdx++];
 			if (c >= 0x20 && c != 0x22 && c != 0x5c) {
 				ensureSpace(1);
 				out[outIdx++] = c;
@@ -474,7 +472,10 @@ private:
 				writeControlChar(c);
 			}
 		}
+		inIdx--;
 	}
+
+	// TODO SSE2
 
 	template<>
 	void writeEscapedChars<ISA::SSE42>() {
@@ -553,22 +554,19 @@ private:
 	}
 
 	template<ISA isa>
-	void transcodeObjectId() {}
-
-	template<>
-	inline void transcodeObjectId<ISA::BASELINE>() {
-		// TODO
+	void transcodeObjectId() {
+		out[outIdx++] = '"';
+		const size_t end = inIdx + 12;
+		while (inIdx < end) {
+			uint8_t byte = in[inIdx++];
+			out[outIdx++] = hexNib(byte >> 4);
+			out[outIdx++] = hexNib(byte & 0xf);
+		}
+		out[outIdx++] = '"';
 	}
 
-	template<>
-	inline void transcodeObjectId<ISA::SSE2>() {
-		transcodeObjectId<ISA::BASELINE>();
-	}
-
-	template<>
-	inline void transcodeObjectId<ISA::SSE42>() {
-		transcodeObjectId<ISA::BASELINE>();
-	}
+	// TODO SSE2: arithmetic (nib + (nib < 10 ? 48 : 87))
+	// TODO SSSE3: 128-bit pshufb
 
 	template<>
 	inline void transcodeObjectId<ISA::AVX2>() {
@@ -593,7 +591,7 @@ private:
 		__m256i doubled = _mm256_cvtepu8_epi16(a);
 		__m256i hi = _mm256_srli_epi16(doubled, 4);
 		__m256i lo = _mm256_shuffle_epi8(doubled, ROT2);
-		__m256i bytes = _mm256_or_si256(hi, lo); // avx512: mask_shuffle to avoid the OR
+		__m256i bytes = _mm256_or_si256(hi, lo); // TODO AVX512: mask_shuffle to avoid the OR
 		bytes = _mm256_and_si256(bytes, _mm256_set1_epi8(0b1111));
 		// Encode hex
 		__m256i b = _mm256_shuffle_epi8(HEX_LUTR, bytes);
@@ -693,8 +691,8 @@ private:
 			case BSON_DATA_NUMBER: {
 				const double value = readDoubleLE();
 				if (std::isfinite(value)) {
-					ensureSpace(20); // TODO
-					const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%.*f", DBL_DIG, value);
+					ensureSpace(25); // TODO
+					const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%.*f", DBL_DECIMAL_DIG, value);
 					outIdx += n;
 				} else {
 					ensureSpace(4);
@@ -742,7 +740,6 @@ private:
 				break;
 			}
 			case BSON_DATA_ARRAY: {
-				const int32_t size = readInt32LE(false);
 				if (transcodeObject<isa>(true))
 					return true;
 				if (in[inIdx - 1] != 0) {
