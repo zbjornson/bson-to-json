@@ -17,7 +17,7 @@ medium objects (9MB BSON):
 Major reasons it's fast:
 * Direct UTF8 to JSON-escaped string transcoding.
 * No waste temporary objects created for the GC to clean up.
-* SSE4.2 or AVX2-accelerated JSON string escaping.
+* SSE2, SSE4.2 or AVX2-accelerated JSON string escaping.
 * AVX2-accelerated ObjectId hex string encoding, using the technique from
   [zbjornson/fast-hex](https://github.com/zbjornson/fast-hex).
 * Fast number encoding, using the methods from [`fmtlib/fmt`](https://github.com/fmtlib/fmt).
@@ -28,12 +28,11 @@ precision.) That isn't possible with js-bson as far as I know; it writes an
 object with low and high bits.
 
 TODO:
-* Try to squash the remaining v8 deoptimizations in the JS implementation?
-* Portable (non-AVX2) C++ ObjectId decoding.
-* Preprocessor directives or dispatch for SSE4.2, AVX2
-* Try to make the `isArray` parameter optional.
-* Error handling (uses C++ exceptions but Node.js disables C++ exceptions)
+* Fix crash when using iterator interface
+* CPUID dispatch for SSE4.2, AVX2
 * Optimize number (double) (currently uses sprintf)
+* Try to make the `isArray` parameter optional.
+* Try to squash the remaining v8 deoptimizations in the JS implementation?
 
 ## Benchmarks by BSON type (ops/sec):
 
