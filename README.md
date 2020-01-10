@@ -6,10 +6,11 @@ medium objects (9MB BSON):
 
 | Method | Time (ms) |
 | ------ | --------: |
-| `JSON.stringify(BSON.deserialize(arr))`<sup>1</sup> | 196 |
-| this, JS | 36 |
-| this, portable C++ | 25 |
-| this, SSE4.2 | 13 |
+| `JSON.stringify(BSON.deserialize(arr))`<sup>1</sup> | 226 |
+| this, JS | 29 |
+| this, portable C++ | 23 |
+| this, SSE2 | 16 |
+| this, SSE4.2 | 12 |
 | this, AVX2 | 11 |
 
 <sup>1</sup> `BSON.deserialize` is the [official MongoDB js-bson implementation](https://github.com/mongodb/js-bson).
@@ -29,14 +30,13 @@ object with low and high bits.
 
 TODO:
 * Fix crash when using iterator interface
-* CPUID dispatch for SSE4.2, AVX2
 * Optimize number (double) (currently uses sprintf)
-* Try to make the `isArray` parameter optional.
+* Try to make the `isArray` parameter optional, else document it.
 * Try to squash the remaining v8 deoptimizations in the JS implementation?
 
 ## Benchmarks by BSON type (ops/sec):
 
-| Type | js-bson | this, JS | this, CPP |
+| Type | js-bson | this, JS | this, CPP (AVX2) |
 | ---- | ---: | ---: | ---: |
 | long | 1,928 | 390 | 36,918
 | int | 1,655 | 537 | 16,348

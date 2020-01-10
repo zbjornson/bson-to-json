@@ -11,11 +11,60 @@
 #include <mutex>
 #include <condition_variable>
 
+enum class ISA {
+	BASELINE,
+	SSE2,
+	SSE3,
+	SSSE3,
+	SSE42,
+	AVX,
+	AVX2,
+	AVX512F,
+	AVX512VL,
+	BMI1,
+	BMI2
+};
+
+template<ISA isa> static bool supports() { return false; }
+template<> static bool supports<ISA::BASELINE>() { return true; }
+
+#if defined(__x86_64__) || defined(_M_X64)
+
 #ifdef _MSC_VER
 # include <intrin.h>
 #elif defined(__GNUC__)
 # include <x86intrin.h>
 #endif
+
+constexpr static uint8_t EAX = 0;
+constexpr static uint8_t EBX = 1;
+constexpr static uint8_t ECX = 2;
+constexpr static uint8_t EDX = 3;
+
+static bool cpuid(uint8_t outreg, uint8_t bit, uint32_t initEax, uint32_t initEcx = 0) {
+	uint32_t regs[4];
+#ifdef _MSC_VER
+	__cpuidex(reinterpret_cast<int32_t*>(regs), initEax, initEcx);
+#else
+	asm volatile("cpuid"
+		: "=a" (regs[0]), "=b" (regs[1]), "=c" (regs[2]), "=d" (regs[3])
+		: "0" (initEax), "2" (initEcx));
+#endif
+	return regs[outreg] & (1 << bit);
+}
+
+template<> static bool supports<ISA::SSE2>() { return cpuid(EDX, 26, 1); }
+template<> static bool supports<ISA::SSE3>() { return cpuid(ECX, 0, 1); }
+template<> static bool supports<ISA::SSSE3>() { return cpuid(ECX, 9, 1); }
+template<> static bool supports<ISA::SSE42>() { return cpuid(ECX, 20, 1); }
+template<> static bool supports<ISA::AVX>() { return cpuid(ECX, 28, 1); }
+template<> static bool supports<ISA::AVX2>() { return cpuid(EBX, 5, 7); }
+template<> static bool supports<ISA::AVX512F>() { return cpuid(EBX, 16, 7); }
+template<> static bool supports<ISA::AVX512VL>() { return cpuid(EBX, 31, 7); }
+template<> static bool supports<ISA::BMI1>() { return cpuid(EBX, 3, 7); }
+template<> static bool supports<ISA::BMI2>() { return cpuid(EBX, 8, 7); }
+
+#endif // x86_64
 
 #ifdef _MSC_VER
 // long is 4B in MSVC, 8 Clang and GCC
@@ -120,13 +169,6 @@ inline static constexpr uint8_t hexNib(uint8_t nib) {
 	return HEX_DIGITS[nib];
 	// return nib + (nib < 10 ? 48 : 87);
 }
-
-enum class ISA {
-	BASELINE,
-	SSE2,
-	SSE42,
-	AVX2
-};
 
 class Transcoder {
 public:
@@ -512,7 +554,7 @@ private:
 	}
 
 	template<>
-	void writeEscapedChars<ISA::AVX2>() {
+	void writeEscapedChars<ISA::AVX2 /*and BMI1*/>() {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
 		__m256i esch20 = _mm256_set1_epi8(0x20);
@@ -796,7 +838,8 @@ private:
 
 Napi::FunctionReference constructor;
 
-class BJTrans : public Napi::ObjectWrap<BJTrans> {
+template<ISA isa>
+class BJTrans : public Napi::ObjectWrap<BJTrans<isa> > {
 public:
 
 	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
@@ -844,7 +887,7 @@ public:
 			}
 		}
 
-		worker = std::thread { &Transcoder::transcode<ISA::AVX2>, &trans,
+		worker = std::thread { &Transcoder::transcode<isa>, &trans,
 			arr.Data(), arr.ByteLength(), isArray, chunkSize, Transcoder::Mode::PAUSE, out };
 	}
 
@@ -892,6 +935,7 @@ private:
 	}
 };
 
+template<ISA isa>
 Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 	Napi::Env env = info.Env();
 
@@ -899,7 +943,7 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 	bool isArray = info[1].ToBoolean().Value();
 
 	Transcoder trans;
-	bool status = trans.transcode<ISA::AVX2>(arr.Data(), arr.ByteLength(), isArray);
+	bool status = trans.transcode<isa>(arr.Data(), arr.ByteLength(), isArray);
 	if (status) {
 		std::free(trans.out);
 		Napi::Error::New(env, trans.err).ThrowAsJavaScriptException();
@@ -915,8 +959,28 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-	exports.Set(Napi::String::New(env, "bsonToJson"), Napi::Function::New(env, bsonToJson));
-	BJTrans::Init(env, exports);
+	Napi::Function fn;
+	char* isa;
+	if (supports<ISA::AVX2>()) {
+		fn = Napi::Function::New(env, bsonToJson<ISA::AVX2>);
+		BJTrans<ISA::AVX2>::Init(env, exports);
+		isa = "AVX2";
+	} else if (supports<ISA::SSE42>()) {
+		fn = Napi::Function::New(env, bsonToJson<ISA::SSE42>);
+		BJTrans<ISA::SSE42>::Init(env, exports);
+		isa = "SSE4.2";
+	} else if (supports<ISA::SSE2>()) {
+		fn = Napi::Function::New(env, bsonToJson<ISA::SSE2>);
+		BJTrans<ISA::SSE2>::Init(env, exports);
+		isa = "SSE2";
+	} else {
+		fn = Napi::Function::New(env, bsonToJson<ISA::BASELINE>);
+		BJTrans<ISA::BASELINE>::Init(env, exports);
+		isa = "Baseline";
+	}
+
+	exports.Set(Napi::String::New(env, "bsonToJson"), fn);
+	exports.Set(Napi::String::New(env, "ISE"), isa);
 
 	return exports;
 }
