@@ -275,21 +275,11 @@ private:
 	std::mutex m;
 	std::condition_variable cv;
 
-	inline int64_t readInt64LE() {
-		int64_t v = *reinterpret_cast<const int64_t*>(in + inIdx); // (UB, LE)
-		inIdx += 8;
-		return v;
-	}
-
-	inline int32_t readInt32LE() {
-		int32_t v = *reinterpret_cast<const int32_t*>(in + inIdx); // (UB, LE)
-		inIdx += 4;
-		return v;
-	}
-
-	inline double readDoubleLE() {
-		double v = *reinterpret_cast<const double*>(in + inIdx); // (UB, LE)
-		inIdx += 8;
+	template<typename T>
+	inline T readLE() {
+		T v;
+		std::memcpy(&v, in + inIdx, sizeof(T));
+		inIdx += sizeof(T);
 		return v;
 	}
 
@@ -654,7 +644,7 @@ private:
 
 	template<ISA isa>
 	bool transcodeObject(bool isArray) {
-		const int32_t size = readInt32LE();
+		const int32_t size = readLE<int32_t>();
 		if (size < 5) {
 			err = "BSON size must be >=5";
 			return true;
@@ -702,7 +692,7 @@ private:
 
 			switch (elementType) {
 			case BSON_DATA_STRING: {
-				const int32_t size = readInt32LE();
+				const int32_t size = readLE<int32_t>();
 				if (size <= 0 || size > inLen - inIdx) {
 					err = "Bad string length";
 					return true;
@@ -721,7 +711,7 @@ private:
 				break;
 			}
 			case BSON_DATA_INT: {
-				const int32_t value = readInt32LE();
+				const int32_t value = readLE<int32_t>();
 				uint8_t temp[INT32_BUF_DIGS];
 				uint8_t* temp_p = temp;
 				size_t n = fast_itoa(temp_p, value);
@@ -731,7 +721,7 @@ private:
 				break;
 			}
 			case BSON_DATA_NUMBER: {
-				const double value = readDoubleLE();
+				const double value = readLE<double>();
 				if (std::isfinite(value)) {
 					ensureSpace(25); // TODO
 					const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%.*f", DBL_DECIMAL_DIG, value);
@@ -747,7 +737,7 @@ private:
 			}
 			case BSON_DATA_DATE: {
 				ensureSpace(26);
-				const int64_t value = readInt64LE(); // BSON encodes UTC ms since Unix epoch
+				const int64_t value = readLE<int64_t>(); // BSON encodes UTC ms since Unix epoch
 				const time_t seconds = value / 1000;
 				const int32_t millis = value % 1000;
 				out[outIdx++] = '"';
@@ -799,7 +789,7 @@ private:
 				break;
 			}
 			case BSON_DATA_LONG: {
-				const int64_t value = readInt64LE();
+				const int64_t value = readLE<int64_t>();
 				uint8_t temp[INT64_BUF_DIGS];
 				uint8_t* temp_p = temp;
 				size_t n = fast_itoa(temp_p, value);
