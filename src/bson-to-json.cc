@@ -140,7 +140,7 @@ inline static constexpr size_t nDigits(int32_t v) {
 template<int isa> struct Enabler : Enabler<isa - 1> {};
 template<> struct Enabler<0> {};
 
-#define ENSURE_SPACE_OR_RETURN(n) if (ensureSpace(n)) return true
+#define ENSURE_SPACE_OR_RETURN(n) if (ensureSpace<mode>(n)) return true
 
 class Transcoder {
 public:
@@ -171,14 +171,13 @@ public:
 	/// </param>
 	/// <param name="mode_">What to do when the output buffer is full.</param>
 	/// <param name="fixedOut">With Mode::PAUSE, output buffer to reuse.</param>
-	template <ISA isa>
+	template <ISA isa, Mode mode>
 	bool transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
-			size_t chunkSize = 0, Mode mode_ = Mode::REALLOC, uint8_t* fixedOut = nullptr) {
+			size_t chunkSize = 0, uint8_t* fixedOut = nullptr) {
 
 		in = in_;
 		inLen = inLen_;
 		inIdx = 0;
-		mode = mode_;
 
 		if (chunkSize == 0 && fixedOut == nullptr) {
 			// Estimate outLen at 2.5x inLen. Expansion rates for values:
@@ -208,7 +207,7 @@ public:
 			cv.wait(lk, [&] { return outIdx == 0; });
 		}
 
-		if (transcodeObject<isa>(isArray))
+		if (transcodeObject<isa, mode>(isArray))
 			return true;
 
 		if (mode == Mode::PAUSE)
@@ -242,7 +241,6 @@ private:
 	const uint8_t* in = nullptr;
 	size_t inIdx = 0;
 	size_t inLen = 0;
-	Mode mode;
 	std::mutex m;
 	std::condition_variable cv;
 
@@ -268,12 +266,14 @@ private:
 		return false;
 	}
 
+	template<Mode mode>
 	[[nodiscard]] inline bool ensureSpace(size_t n) {
 		if (outIdx + n < outLen) [[likely]] {
 			return false;
 		}
 
 		if (mode == Mode::REALLOC) {
+			// TODO assert(outIdx + n < (outLen * 3) >> 1)
 			if (resize((outLen * 3) >> 1))
 				return true;
 		} else {
@@ -293,6 +293,7 @@ private:
 	}
 
 	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
+	template<Mode mode>
 	bool writeEscapedChars(size_t n, Enabler<ISA::BASELINE>) {
 		const size_t end = inIdx + n;
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
@@ -315,6 +316,7 @@ private:
 		return false;
 	}
 
+	template<Mode mode>
 	bool writeEscapedChars(size_t n, Enabler<ISA::SSE42>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
@@ -355,6 +357,7 @@ private:
 		return false;
 	}
 
+	template<Mode mode>
 	bool writeEscapedChars(size_t n, Enabler<ISA::SSE2>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
@@ -406,6 +409,7 @@ private:
 		return false;
 	}
 
+	template<Mode mode>
 	bool writeEscapedChars(size_t n, Enabler<ISA::AVX2>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
@@ -458,6 +462,7 @@ private:
 	}
 
 	// Writes the null-terminated string from in to out, escaping per JSON spec.
+	template<Mode mode>
 	bool writeEscapedChars(Enabler<ISA::BASELINE>) {
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
 		// true (worst-case expansion is 6x).
@@ -482,6 +487,7 @@ private:
 
 	// TODO SSE2
 
+	template<Mode mode>
 	bool writeEscapedChars(Enabler<ISA::SSE42>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 		const __m128i escapes = _mm_set_epi8(0,0, 0,0, 0,0, 0,0, 0,0, 0xff,0x5d, 0x5b,0x23, 0x21,0x20);
@@ -516,6 +522,7 @@ private:
 		return false;
 	}
 
+	template<Mode mode>
 	bool writeEscapedChars(Enabler<ISA::AVX2>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
@@ -619,7 +626,7 @@ private:
 		out[outIdx++] = '"';
 	}
 
-	template<ISA isa>
+	template<ISA isa, Mode mode>
 	bool transcodeObject(bool isArray) {
 		const int32_t size = readLE<int32_t>();
 		if (size < 5) {
@@ -649,11 +656,11 @@ private:
 			if (!isArray) {
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
-				writeEscapedChars(Enabler<isa>{});
+				writeEscapedChars<mode>(Enabler<isa>{});
 				inIdx++; // skip null terminator
 				ENSURE_SPACE_OR_RETURN(2);
-				out[outIdx++] = '"';
-				out[outIdx++] = ':';
+				memcpy(out + outIdx, "\":", 2);
+				outIdx += 2;
 			} else {
 				inIdx += nDigits(arrIdx);
 			}
@@ -667,7 +674,7 @@ private:
 				}
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
-				writeEscapedChars(size - 1, Enabler<isa>{});
+				writeEscapedChars<mode>(size - 1, Enabler<isa>{});
 				inIdx++; // skip null terminator
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
@@ -699,10 +706,8 @@ private:
 					outIdx += sb.position();
 				} else {
 					ENSURE_SPACE_OR_RETURN(4);
-					out[outIdx++] = 'n';
-					out[outIdx++] = 'u';
-					out[outIdx++] = 'l';
-					out[outIdx++] = 'l';
+					memcpy(out + outIdx, "null", 4);
+					outIdx += 4;
 				}
 				break;
 			}
@@ -711,18 +716,56 @@ private:
 				const int64_t value = readLE<int64_t>(); // BSON encodes UTC ms since Unix epoch
 				const time_t seconds = value / 1000;
 				const int32_t millis = value % 1000;
-				out[outIdx++] = '"';
-				size_t n = strftime(reinterpret_cast<char*>(out + outIdx), 24, "%FT%T", gmtime(&seconds));
-				outIdx += n;
-				out[outIdx++] = '.';
+
 				uint8_t temp[INT_BUF_DIGS<int32_t>];
 				uint8_t* temp_p = temp;
-				n = fast_itoa(temp_p, millis);
-				out[outIdx++] = n < 3 ? '0' : *temp_p++;
-				out[outIdx++] = n < 2 ? '0' : *temp_p++;
-				out[outIdx++] = n < 1 ? '0' : *temp_p++;
-				out[outIdx++] = 'Z';
+				size_t n;
 				out[outIdx++] = '"';
+				tm* gmt = gmtime(&seconds);
+
+				n = fast_itoa(temp_p, gmt->tm_year + 1900);
+				memcpy(out + outIdx, temp_p, n);
+				outIdx += n;
+				temp_p = temp;
+
+				memcpy(out + outIdx, "-0", 2);
+				n = fast_itoa(temp_p, gmt->tm_mon + 1);
+				outIdx += n == 1 ? 2 : 1;
+				memcpy(out + outIdx, temp_p, n);
+				outIdx += n;
+				temp_p = temp;
+
+				memcpy(out + outIdx, "-0", 2);
+				n = fast_itoa(temp_p, gmt->tm_mday);
+				outIdx += n == 1 ? 2 : 1;
+				memcpy(out + outIdx, temp_p, n);
+				outIdx += n;
+				temp_p = temp;
+
+				memcpy(out + outIdx, "T0", 2);
+				n = fast_itoa(temp_p, gmt->tm_hour);
+				outIdx += n == 1 ? 2 : 1;
+				memcpy(out + outIdx, temp_p, n);
+				outIdx += n;
+				temp_p = temp;
+
+				out[outIdx++] = ':';
+				n = fast_itoa(temp_p, gmt->tm_min);
+				memcpy(out + outIdx, temp_p, n);
+				outIdx += n;
+				temp_p = temp;
+
+				out[outIdx++] = ':';
+				n = fast_itoa(temp_p, gmt->tm_sec);
+				memcpy(out + outIdx, temp_p, n);
+				outIdx += n;
+				temp_p = temp;
+
+				memcpy(out + outIdx, ".000Z\"", 6);
+				n = fast_itoa(temp_p, millis);
+				outIdx += 4 - n;
+				memcpy(out + outIdx, temp_p, n);
+				outIdx += n + 2;
 				break;
 			}
 			case BSON_DATA_BOOLEAN: {
@@ -739,12 +782,12 @@ private:
 				break;
 			}
 			case BSON_DATA_OBJECT: {
-				if (transcodeObject<isa>(false))
+				if (transcodeObject<isa, mode>(false))
 					return true;
 				break;
 			}
 			case BSON_DATA_ARRAY: {
-				if (transcodeObject<isa>(true))
+				if (transcodeObject<isa, mode>(true))
 					return true;
 				if (in[inIdx - 1] != 0) {
 					err = "Invalid array terminator byte";
@@ -849,8 +892,8 @@ public:
 			}
 		}
 
-		worker = std::thread { &Transcoder::transcode<isa>, &trans,
-			arr.Data(), arr.ByteLength(), isArray, chunkSize, Transcoder::Mode::PAUSE, out };
+		worker = std::thread { &Transcoder::transcode<isa, Transcoder::Mode::PAUSE>, &trans,
+			arr.Data(), arr.ByteLength(), isArray, chunkSize, out };
 	}
 
 private:
@@ -905,7 +948,7 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 	bool isArray = info[1].ToBoolean().Value();
 
 	Transcoder trans;
-	bool status = trans.transcode<isa>(arr.Data(), arr.ByteLength(), isArray);
+	bool status = trans.transcode<isa, Transcoder::Mode::REALLOC>(arr.Data(), arr.ByteLength(), isArray);
 	if (status) {
 		std::free(trans.out);
 		Napi::Error::New(env, trans.err).ThrowAsJavaScriptException();

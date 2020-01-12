@@ -13,11 +13,11 @@ medium objects (9MB BSON):
 | Method | Time (ms) |
 | ------ | --------: |
 | `JSON.stringify(BSON.deserialize(arr))`<sup>1</sup> | 226 |
-| this, JS | 29 |
-| this, portable C++ | 23 |
-| this, SSE2 | 16 |
-| this, SSE4.2 | 12 |
-| this, AVX2 | 11 |
+| this, JS | 27.4 |
+| this, portable C++ | 20.2 |
+| this, SSE2 | 14.8 |
+| this, SSE4.2 | 10.8 |
+| this, AVX2 | 10.0 |
 
 <sup>1</sup> `BSON.deserialize` is the [official MongoDB js-bson implementation](https://github.com/mongodb/js-bson).
 
@@ -36,7 +36,7 @@ Major reasons it's fast:
 TODO:
 - [ ] Fix read and write overruns.
 - [ ] Fix crash when using iterator interface.
-- [ ] Optimize date printing.
+- [ ] Try to reduce register spill
 - [ ] The JS impl is incomplete (output bounds checking).
 - [ ] Try to squash the remaining v8 deoptimizations in the JS implementation?
 - [ ] Refactor so it's usable as a C++ library?
@@ -45,16 +45,16 @@ TODO:
 
 | Type | js-bson | this, JS | this, CPP (AVX2) |
 | ---- | ---: | ---: | ---: |
-| long | 1,928 | 390 | 28,404
-| int | 1,655 | 537 | 16,684
+| long | 1,928 | 390 | 29,222
+| int | 1,655 | 537 | 17,707
 | ObjectId | 1,048 | 784 | 37,079
-| date | 413 | 278 | 2,137
+| date | 413 | 278 | 8,913
 | number | 1,008 | 318 | 2,132
-| boolean | 440 | 754 | 8,265
-| null | 482 | 723 | 11,397
-| string\<len=1000, esc=0.00><sup>1</sup> | 12,720 | 785 | 54,680
-| string\<len=1000, esc=0.01> | 12,202 | 723 | 47,613
-| string\<len=1000, esc=0.05> | 11,595 | 756 | 40,777
+| boolean | 440 | 754 | 9,424
+| null | 482 | 723 | 16,054
+| string\<len=1000, esc=0.00><sup>1</sup> | 12,304 | 781 | 55,502
+| string\<len=1000, esc=0.01> | 12,720 | 748 | 56,145
+| string\<len=1000, esc=0.05> | 12,320 | 756 | 43,867
 
 <sup>1</sup>String transcoding performance depends on the length of the string
 (`len`) and the number of characters that must be escaped in the JSON output
