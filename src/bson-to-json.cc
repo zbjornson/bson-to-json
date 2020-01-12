@@ -1,9 +1,6 @@
 #include <cstdint>
 #include <cstdlib>
-#include <string>
-#include <string.h>
-#include <stdexcept>
-#include <cstdio> // sprintf
+#include <cstring>
 #include <ctime> // strftime
 #include <thread>
 #include <mutex>
@@ -12,13 +9,13 @@
 #include "../deps/double_conversion/double-to-string.h"
 #include "cpu-detection.h"
 
-using namespace double_conversion;
-
 #ifdef _MSC_VER
 # include <intrin.h>
 #elif defined(__GNUC__)
 # include <x86intrin.h>
 #endif
+
+using namespace double_conversion;
 
 using std::size_t;
 using std::uint8_t;
@@ -117,6 +114,8 @@ inline static constexpr uint8_t hexNib(uint8_t nib) {
 	return HEX_DIGITS[nib];
 	// return nib + (nib < 10 ? 48 : 87);
 }
+
+#define ENSURE_SPACE_OR_RETURN(n) if (ensureSpace(n)) return true
 
 class Transcoder {
 public:
@@ -230,30 +229,34 @@ private:
 		return v;
 	}
 
-	void resize(size_t to) {
+	bool resize(size_t to) {
 		// printf("resizing from %d to %d\n", outLen, to);
 		uint8_t* oldOut = out;
 		out = static_cast<uint8_t*>(std::realloc(out, to));
 		if (out == nullptr) {
 			std::free(oldOut);
-			throw std::runtime_error("Failed to reallocate output.");
+			err = "Allocation failure";
+			return true;
 		}
 		// printf("allocated %p\n", out);
 		outLen = to;
+		return false;
 	}
 
-	inline void ensureSpace(size_t n) {
+	[[nodiscard]] inline bool ensureSpace(size_t n) {
 		if (outIdx + n < outLen) [[likely]] {
-			return;
+			return false;
 		}
 
 		if (mode == Mode::REALLOC) {
-			resize((outLen * 3) >> 1);
+			if (resize((outLen * 3) >> 1))
+				return true;
 		} else {
 			cv.notify_one();
 			std::unique_lock<std::mutex> lk(m);
 			cv.wait(lk, [&] { return outIdx == 0; });
 		}
+		return false;
 	}
 
 	// Writes the `\ u 0 0 ch cl` sequence
@@ -268,31 +271,32 @@ private:
 
 	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
 	template<ISA isa>
-	void writeEscapedChars(size_t n) {
+	bool writeEscapedChars(size_t n) {
 		const size_t end = inIdx + n;
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
 		// true (worst-case expansion is 6x).
-		ensureSpace(n);
+		ENSURE_SPACE_OR_RETURN(n);
 		while (inIdx < end) {
 			uint8_t xc;
 			const uint8_t c = in[inIdx++];
 			if (c >= 0x20 && c != 0x22 && c != 0x5c) {
 				out[outIdx++] = c;
 			} else if ((xc = getEscape(c))) { // single char escape
-				ensureSpace(end - inIdx + 1);
+				ENSURE_SPACE_OR_RETURN(end - inIdx + 1);
 				out[outIdx++] = '\\';
 				out[outIdx++] = xc;
 			} else { // c < 0x20, control
-				ensureSpace(end - inIdx + 5);
+				ENSURE_SPACE_OR_RETURN(end - inIdx + 5);
 				writeControlChar(c);
 			}
 		}
+		return false;
 	}
 
 	template<>
-	void writeEscapedChars<ISA::SSE42>(size_t n) {
+	bool writeEscapedChars<ISA::SSE42>(size_t n) {
 		const size_t end = inIdx + n;
-		ensureSpace(n);
+		ENSURE_SPACE_OR_RETURN(n);
 
 		const __m128i escapes = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x5c,0x5c, 0x22,0x22, 0x1f,0);
 
@@ -318,21 +322,22 @@ private:
 				uint8_t c = in[inIdx++];
 				n--;
 				if ((xc = getEscape(c))) { // single char escape
-					ensureSpace(end - inIdx + 1);
+					ENSURE_SPACE_OR_RETURN(end - inIdx + 1);
 					out[outIdx++] = '\\';
 					out[outIdx++] = xc;
 				} else { // c < 0x20, control
-					ensureSpace(end - inIdx + 5);
+					ENSURE_SPACE_OR_RETURN(end - inIdx + 5);
 					writeControlChar(c);
 				}
 			}
 		}
+		return false;
 	}
 
 	template<>
-	void writeEscapedChars<ISA::SSE2>(size_t n) {
+	bool writeEscapedChars<ISA::SSE2>(size_t n) {
 		const size_t end = inIdx + n;
-		ensureSpace(n);
+		ENSURE_SPACE_OR_RETURN(n);
 
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
@@ -369,21 +374,22 @@ private:
 				uint8_t c = in[inIdx++];
 				n--;
 				if ((xc = getEscape(c))) { // single char escape
-					ensureSpace(end - inIdx + 1);
+					ENSURE_SPACE_OR_RETURN(end - inIdx + 1);
 					out[outIdx++] = '\\';
 					out[outIdx++] = xc;
 				} else { // c < 0x20, control
-					ensureSpace(end - inIdx + 5);
+					ENSURE_SPACE_OR_RETURN(end - inIdx + 5);
 					writeControlChar(c);
 				}
 			}
 		}
+		return false;
 	}
 
 	template<>
-	void writeEscapedChars<ISA::AVX2>(size_t n) {
+	bool writeEscapedChars<ISA::AVX2>(size_t n) {
 		const size_t end = inIdx + n;
-		ensureSpace(n);
+		ENSURE_SPACE_OR_RETURN(n);
 
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
@@ -420,44 +426,46 @@ private:
 				uint8_t c = in[inIdx++];
 				n--;
 				if ((xc = getEscape(c))) { // single char escape
-					ensureSpace(end - inIdx + 1);
+					ENSURE_SPACE_OR_RETURN(end - inIdx + 1);
 					out[outIdx++] = '\\';
 					out[outIdx++] = xc;
 				} else { // c < 0x20, control
-					ensureSpace(end - inIdx + 5);
+					ENSURE_SPACE_OR_RETURN(end - inIdx + 5);
 					writeControlChar(c);
 				}
 			}
 		}
+		return false;
 	}
 
 	// Writes the null-terminated string from in to out, escaping per JSON spec.
 	template<ISA isa>
-	void writeEscapedChars() {
+	bool writeEscapedChars() {
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
 		// true (worst-case expansion is 6x).
 		uint8_t c;
 		while ((c = in[inIdx++])) {
 			uint8_t xc;
 			if (c >= 0x20 && c != 0x22 && c != 0x5c) {
-				ensureSpace(1);
+				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = c;
 			} else if ((xc = getEscape(c))) { // single char escape
-				ensureSpace(2);
+				ENSURE_SPACE_OR_RETURN(2);
 				out[outIdx++] = '\\';
 				out[outIdx++] = xc;
 			} else { // c < 0x20, control
-				ensureSpace(6);
+				ENSURE_SPACE_OR_RETURN(6);
 				writeControlChar(c);
 			}
 		}
 		inIdx--;
+		return false;
 	}
 
 	// TODO SSE2
 
 	template<>
-	void writeEscapedChars<ISA::SSE42>() {
+	bool writeEscapedChars<ISA::SSE42>() {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 		const __m128i escapes = _mm_set_epi8(0,0, 0,0, 0,0, 0,0, 0,0, 0xff,0x5d, 0x5b,0x23, 0x21,0x20);
 
@@ -466,7 +474,7 @@ private:
 			int esRIdx = _mm_cmpistri(escapes, chars,
 				_SIDD_UBYTE_OPS | _SIDD_CMP_RANGES | _SIDD_NEGATIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT);
 
-			ensureSpace(esRIdx);
+			ENSURE_SPACE_OR_RETURN(esRIdx);
 			_mm_storeu_si128(reinterpret_cast<__m128i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
 			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
 			outIdx += esRIdx;
@@ -474,26 +482,28 @@ private:
 
 			if (esRIdx < 16) {
 				if (in[inIdx] == 0)
-					return;
+					return false;
 
 				uint8_t xc;
 				uint8_t c = in[inIdx++];
 				if ((xc = getEscape(c))) { // single char escape
-					ensureSpace(2);
+					ENSURE_SPACE_OR_RETURN(2);
 					out[outIdx++] = '\\';
 					out[outIdx++] = xc;
 				} else { // c < 0x20, control
-					ensureSpace(6);
+					ENSURE_SPACE_OR_RETURN(6);
 					writeControlChar(c);
 				}
 			}
 		}
+		return false;
 	}
 
 	template<>
-	void writeEscapedChars<ISA::AVX2 /*and BMI1*/>() {
+	bool writeEscapedChars<ISA::AVX2 /*and BMI1*/>() {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
+		// TODO see explicit length version's handling of unsigned comparison.
 		__m256i esch20 = _mm256_set1_epi8(0x20);
 		__m256i esch22 = _mm256_set1_epi8(0x22);
 		__m256i esch5c = _mm256_set1_epi8(0x5c);
@@ -508,7 +518,7 @@ private:
 			uint32_t mask = _mm256_movemask_epi8(iseq);
 			uint32_t esRIdx = _tzcnt_u32(mask); // position of 0 *or* a char that needs to be escaped
 
-			ensureSpace(esRIdx);
+			ENSURE_SPACE_OR_RETURN(esRIdx);
 			_mm256_storeu_si256(reinterpret_cast<__m256i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
 			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
 			outIdx += esRIdx;
@@ -516,20 +526,21 @@ private:
 
 			if (esRIdx < 32) {
 				if (in[inIdx] == 0)
-					return;
+					return false;
 				
 				uint8_t xc;
 				uint8_t c = in[inIdx++];
 				if ((xc = getEscape(c))) { // single char escape
-					ensureSpace(2);
+					ENSURE_SPACE_OR_RETURN(2);
 					out[outIdx++] = '\\';
 					out[outIdx++] = xc;
 				} else { // c < 0x20, control
-					ensureSpace(6);
+					ENSURE_SPACE_OR_RETURN(6);
 					writeControlChar(c);
 				}
 			}
 		}
+		return false;
 	}
 
 	template<ISA isa>
@@ -580,7 +591,12 @@ private:
 		// if (not at end of buffer) {
 		//   _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), b);
 		// } else {
-		// Else use a 16B and an 8B
+		
+		// Split store:
+		// _mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), _mm256_castsi256_si128(b)); // 16B
+		// *reinterpret_cast<uint64_t*>(out + outIdx + 16) = _mm256_extract_epi64(b, 3);
+
+		// Masked store:
 		__m256i storemask = _mm256_set_epi32(0, 0, 0x80000000, 0x80000000,
 			0x80000000, 0x80000000, 0x80000000, 0x80000000); // 24B = 6x4B
 		_mm256_maskstore_epi32(reinterpret_cast<int*>(out + outIdx), storemask, b);
@@ -603,7 +619,7 @@ private:
 
 		bool first = true;
 
-		ensureSpace(1);
+		ENSURE_SPACE_OR_RETURN(1);
 		out[outIdx++] = isArray ? '[' : '{';
 
 		while (true) {
@@ -613,17 +629,17 @@ private:
 			if (first) {
 				first = false;
 			} else {
-				ensureSpace(1);
+				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = ',';
 			}
 
 			{ // Write name
 				if (!isArray) {
-					ensureSpace(1);
+					ENSURE_SPACE_OR_RETURN(1);
 					out[outIdx++] = '"';
 					writeEscapedChars<isa>();
 					inIdx++; // skip null terminator
-					ensureSpace(2);
+					ENSURE_SPACE_OR_RETURN(2);
 					out[outIdx++] = '"';
 					out[outIdx++] = ':';
 				} else {
@@ -644,16 +660,16 @@ private:
 					err = "Bad string length";
 					return true;
 				}
-				ensureSpace(1);
+				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
 				writeEscapedChars<isa>(size - 1);
 				inIdx++; // skip null terminator
-				ensureSpace(1);
+				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
 				break;
 			}
 			case BSON_DATA_OID: {
-				ensureSpace(26);
+				ENSURE_SPACE_OR_RETURN(26);
 				transcodeObjectId<isa>();
 				break;
 			}
@@ -662,7 +678,7 @@ private:
 				uint8_t temp[INT_BUF_DIGS<int32_t>];
 				uint8_t* temp_p = temp;
 				size_t n = fast_itoa(temp_p, value);
-				ensureSpace(n);
+				ENSURE_SPACE_OR_RETURN(n);
 				memcpy(out + outIdx, temp_p, n);
 				outIdx += n;
 				break;
@@ -671,13 +687,13 @@ private:
 				const double value = readLE<double>();
 				if (std::isfinite(value)) {
 					constexpr size_t kBufferSize = 128;
-					ensureSpace(kBufferSize);
+					ENSURE_SPACE_OR_RETURN(kBufferSize);
 					StringBuilder sb(reinterpret_cast<char*>(out + outIdx), kBufferSize);
 					auto& dc = DoubleToStringConverter::EcmaScriptConverter();
 					dc.ToShortest(value, &sb);
 					outIdx += sb.position();
 				} else {
-					ensureSpace(4);
+					ENSURE_SPACE_OR_RETURN(4);
 					out[outIdx++] = 'n';
 					out[outIdx++] = 'u';
 					out[outIdx++] = 'l';
@@ -686,28 +702,34 @@ private:
 				break;
 			}
 			case BSON_DATA_DATE: {
-				ensureSpace(26);
+				ENSURE_SPACE_OR_RETURN(26);
 				const int64_t value = readLE<int64_t>(); // BSON encodes UTC ms since Unix epoch
 				const time_t seconds = value / 1000;
 				const int32_t millis = value % 1000;
 				out[outIdx++] = '"';
 				size_t n = strftime(reinterpret_cast<char*>(out + outIdx), 24, "%FT%T", gmtime(&seconds));
 				outIdx += n;
-				n = sprintf(reinterpret_cast<char*>(out + outIdx), ".%03dZ", millis);
-				outIdx += n;
+				out[outIdx++] = '.';
+				uint8_t temp[INT_BUF_DIGS<int32_t>];
+				uint8_t* temp_p = temp;
+				n = fast_itoa(temp_p, millis);
+				out[outIdx++] = n < 3 ? '0' : *temp_p++;
+				out[outIdx++] = n < 2 ? '0' : *temp_p++;
+				out[outIdx++] = n < 1 ? '0' : *temp_p++;
+				out[outIdx++] = 'Z';
 				out[outIdx++] = '"';
 				break;
 			}
 			case BSON_DATA_BOOLEAN: {
 				const uint8_t val = in[inIdx++];
 				if (val == 1) {
-					ensureSpace(4);
+					ENSURE_SPACE_OR_RETURN(4);
 					out[outIdx++] = 't';
 					out[outIdx++] = 'r';
 					out[outIdx++] = 'u';
 					out[outIdx++] = 'e';
 				} else {
-					ensureSpace(5);
+					ENSURE_SPACE_OR_RETURN(5);
 					out[outIdx++] = 'f';
 					out[outIdx++] = 'a';
 					out[outIdx++] = 'l';
@@ -731,7 +753,7 @@ private:
 				break;
 			}
 			case BSON_DATA_NULL: {
-				ensureSpace(4);
+				ENSURE_SPACE_OR_RETURN(4);
 				out[outIdx++] = 'n';
 				out[outIdx++] = 'u';
 				out[outIdx++] = 'l';
@@ -743,7 +765,7 @@ private:
 				uint8_t temp[INT_BUF_DIGS<int64_t>];
 				uint8_t* temp_p = temp;
 				size_t n = fast_itoa(temp_p, value);
-				ensureSpace(n);
+				ENSURE_SPACE_OR_RETURN(n);
 				memcpy(out + outIdx, temp_p, n);
 				outIdx += n;
 				break;
@@ -770,7 +792,7 @@ private:
 			}
 		}
 
-		ensureSpace(1);
+		ENSURE_SPACE_OR_RETURN(1);
 		out[outIdx++] = isArray ? ']' : '}';
 		return false;
 	}

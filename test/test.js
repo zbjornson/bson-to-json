@@ -11,7 +11,10 @@ const doc1 = {
 	int: 1,
 	int2: -2345718,
 	number: Math.PI,
-	date: new Date(1575271655028), // has a 0 in the millis (028)
+	date0: new Date(1575271655328), // varying number of 0s in millis
+	date1: new Date(1575271655028),
+	date2: new Date(1575271655008),
+	date3: new Date(1575271655000),
 	boolean: false,
 	object: {
 		embedded: "document"

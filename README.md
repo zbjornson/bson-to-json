@@ -34,6 +34,7 @@ Major reasons it's fast:
 TODO:
 - [ ] Fix read and write overruns.
 - [ ] Fix crash when using iterator interface.
+- [ ] Optimize date printing.
 - [ ] Try to squash the remaining v8 deoptimizations in the JS implementation?
 - [ ] Refactor so it's usable as a C++ library?
 
@@ -44,8 +45,8 @@ TODO:
 | long | 1,928 | 390 | 36,918
 | int | 1,655 | 537 | 16,348
 | ObjectId | 1,048 | 784 | 33,403
-| date | 413 | 278 | 1,455
-| number | 1,008 | 318 | 2060
+| date | 413 | 278 | 2,011
+| number | 1,008 | 318 | 2,060
 | boolean | 440 | 754 | 5,863
 | null | 482 | 723 | 8,696
 | string\<len=1000, esc=0.00><sup>1</sup> | 12,720 | 785 | 54,680
