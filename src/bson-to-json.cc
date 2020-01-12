@@ -286,10 +286,8 @@ private:
 
 	// Writes the `\ u 0 0 ch cl` sequence
 	inline void writeControlChar(uint8_t c) {
-		out[outIdx++] = '\\';
-		out[outIdx++] = 'u';
-		out[outIdx++] = '0';
-		out[outIdx++] = '0';
+		memcpy(out + outIdx, "\\u00", 4);
+		outIdx += 4;
 		out[outIdx++] = (c & 0xf0) ? '1' : '0';
 		out[outIdx++] = hexNib(c & 0xf);
 	}
