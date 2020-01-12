@@ -133,6 +133,13 @@ inline static constexpr size_t nDigits(int32_t v) {
 	return 11;
 }
 
+// Except for MSVC and maybe some C++14-compliant compilers, class member fns
+// can't be specialized, which I want to do for ISA specialization. This is sort
+// of a hack that uses overload resolution instead, based on:
+// https://stackoverflow.com/a/38283990/1218408
+template<int isa> struct Enabler : Enabler<isa - 1> {};
+template<> struct Enabler<0> {};
+
 #define ENSURE_SPACE_OR_RETURN(n) if (ensureSpace(n)) return true
 
 class Transcoder {
@@ -288,8 +295,7 @@ private:
 	}
 
 	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
-	template<ISA isa>
-	bool writeEscapedChars(size_t n) {
+	bool writeEscapedChars(size_t n, Enabler<ISA::BASELINE>) {
 		const size_t end = inIdx + n;
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
 		// true (worst-case expansion is 6x).
@@ -311,8 +317,7 @@ private:
 		return false;
 	}
 
-	template<>
-	bool writeEscapedChars<ISA::SSE42>(size_t n) {
+	bool writeEscapedChars(size_t n, Enabler<ISA::SSE42>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
 
@@ -352,8 +357,7 @@ private:
 		return false;
 	}
 
-	template<>
-	bool writeEscapedChars<ISA::SSE2>(size_t n) {
+	bool writeEscapedChars(size_t n, Enabler<ISA::SSE2>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
 
@@ -404,8 +408,7 @@ private:
 		return false;
 	}
 
-	template<>
-	bool writeEscapedChars<ISA::AVX2>(size_t n) {
+	bool writeEscapedChars(size_t n, Enabler<ISA::AVX2>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
 
@@ -457,8 +460,7 @@ private:
 	}
 
 	// Writes the null-terminated string from in to out, escaping per JSON spec.
-	template<ISA isa>
-	bool writeEscapedChars() {
+	bool writeEscapedChars(Enabler<ISA::BASELINE>) {
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
 		// true (worst-case expansion is 6x).
 		uint8_t c;
@@ -482,8 +484,7 @@ private:
 
 	// TODO SSE2
 
-	template<>
-	bool writeEscapedChars<ISA::SSE42>() {
+	bool writeEscapedChars(Enabler<ISA::SSE42>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 		const __m128i escapes = _mm_set_epi8(0,0, 0,0, 0,0, 0,0, 0,0, 0xff,0x5d, 0x5b,0x23, 0x21,0x20);
 
@@ -517,8 +518,7 @@ private:
 		return false;
 	}
 
-	template<>
-	bool writeEscapedChars<ISA::AVX2 /*and BMI1*/>() {
+	bool writeEscapedChars(Enabler<ISA::AVX2>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
 		// TODO see explicit length version's handling of unsigned comparison.
@@ -561,8 +561,7 @@ private:
 		return false;
 	}
 
-	template<ISA isa>
-	inline void transcodeObjectId() {
+	inline void transcodeObjectId(Enabler<ISA::BASELINE>) {
 		out[outIdx++] = '"';
 		const size_t end = inIdx + 12;
 		while (inIdx < end) {
@@ -576,8 +575,7 @@ private:
 	// TODO SSE2: arithmetic (nib + (nib < 10 ? 48 : 87))
 	// TODO SSSE3: 128-bit pshufb
 
-	template<>
-	inline void transcodeObjectId<ISA::AVX2>() {
+	inline void transcodeObjectId(Enabler<ISA::AVX2>) {
 		// TODO mask load is 4,0.5, load is 3,0.5. Overrun the load where possible:
 		// if (not at end of buffer) {
 		//	 __m128i a = _mm_loadu_si128(reinterpret_cast<__m128i const*>(in + inIdx));
@@ -649,18 +647,17 @@ private:
 				out[outIdx++] = ',';
 			}
 
-			{ // Write name
-				if (!isArray) {
-					ENSURE_SPACE_OR_RETURN(1);
-					out[outIdx++] = '"';
-					writeEscapedChars<isa>();
-					inIdx++; // skip null terminator
-					ENSURE_SPACE_OR_RETURN(2);
-					out[outIdx++] = '"';
-					out[outIdx++] = ':';
-				} else {
-					inIdx += nDigits(arrIdx);
-				}
+			// Write name
+			if (!isArray) {
+				ENSURE_SPACE_OR_RETURN(1);
+				out[outIdx++] = '"';
+				writeEscapedChars(Enabler<isa>{});
+				inIdx++; // skip null terminator
+				ENSURE_SPACE_OR_RETURN(2);
+				out[outIdx++] = '"';
+				out[outIdx++] = ':';
+			} else {
+				inIdx += nDigits(arrIdx);
 			}
 
 			switch (elementType) {
@@ -672,7 +669,7 @@ private:
 				}
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
-				writeEscapedChars<isa>(size - 1);
+				writeEscapedChars(size - 1, Enabler<isa>{});
 				inIdx++; // skip null terminator
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
@@ -680,7 +677,7 @@ private:
 			}
 			case BSON_DATA_OID: {
 				ENSURE_SPACE_OR_RETURN(26);
-				transcodeObjectId<isa>();
+				transcodeObjectId(Enabler<isa>{});
 				break;
 			}
 			case BSON_DATA_INT: {

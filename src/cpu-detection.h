@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-enum class ISA {
+enum ISA {
 	BASELINE,
 	SSE2,
 	SSE3,
