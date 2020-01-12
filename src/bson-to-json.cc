@@ -731,17 +731,12 @@ private:
 				const uint8_t val = in[inIdx++];
 				if (val == 1) {
 					ENSURE_SPACE_OR_RETURN(4);
-					out[outIdx++] = 't';
-					out[outIdx++] = 'r';
-					out[outIdx++] = 'u';
-					out[outIdx++] = 'e';
+					memcpy(out + outIdx, "true", 4);
+					outIdx += 4;
 				} else {
 					ENSURE_SPACE_OR_RETURN(5);
-					out[outIdx++] = 'f';
-					out[outIdx++] = 'a';
-					out[outIdx++] = 'l';
-					out[outIdx++] = 's';
-					out[outIdx++] = 'e';
+					memcpy(out + outIdx, "false", 5);
+					outIdx += 5;
 				}
 				break;
 			}
@@ -761,10 +756,8 @@ private:
 			}
 			case BSON_DATA_NULL: {
 				ENSURE_SPACE_OR_RETURN(4);
-				out[outIdx++] = 'n';
-				out[outIdx++] = 'u';
-				out[outIdx++] = 'l';
-				out[outIdx++] = 'l';
+				memcpy(out + outIdx, "null", 4);
+				outIdx += 4;
 				break;
 			}
 			case BSON_DATA_LONG: {
