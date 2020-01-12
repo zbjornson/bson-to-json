@@ -2,7 +2,7 @@
   "name": "bson-to-json",
   "version": "0.1.0",
   "description": "Direct BSON to JSON transcoder.",
-  "main": "index.js",
+  "main": "build/Release/bsonToJson.node",
   "repository": "https://github.com/zbjornson/bson-to-json",
   "author": "zbjornson",
   "license": "MIT",

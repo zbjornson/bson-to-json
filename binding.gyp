@@ -3,7 +3,13 @@
     {
       "target_name": "bsonToJson",
       "sources": [
-        "bson-to-json.cc"
+        "src/bson-to-json.cc",
+        "deps/double_conversion/double-to-string.cc",
+        "deps/double_conversion/cached-powers.cc",
+        "deps/double_conversion/bignum.cc",
+        "deps/double_conversion/bignum-dtoa.cc",
+        "deps/double_conversion/fast-dtoa.cc",
+        "deps/double_conversion/fixed-dtoa.cc",
       ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"
@@ -19,8 +25,7 @@
         "-march=native",
         "-falign-loops=32", # See readme; significant improvement for some cases
         "-Wno-unused-function", # CPU feature detection only used on Win
-        "-Wno-unused-const-variable", # cpuid regs
-        "-Wno-cast-function-type" # https://github.com/nodejs/nan/issues/807
+        "-Wno-unused-const-variable" # cpuid regs
       ],
       "msvs_settings": {
         "VCCLCompilerTool": {

@@ -355,13 +355,3 @@ exports.bsonToJson = function bsonToJson(doc, isArray) {
 	const t = new Transcoder();
 	return t.transcode(doc, isArray);
 };
-
-// const fs = require("fs");
-// const data = fs.readFileSync("./data.bson");
-// let json;
-// console.time("transcode");
-// for (let i = 0; i < 10; i++)
-// 	json = bsonToJson(data);
-// console.timeEnd("transcode");
-// fs.writeFileSync("./data.json", json);
-// require("./data.json");

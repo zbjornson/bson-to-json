@@ -30,7 +30,7 @@ const doc1 = {
 global.describe = global.describe || function describe(label, fn) { fn(); };
 global.it = global.it || function it(label, fn) { fn(); };
 
-for (const [name, loc] of [["JS", "../index.js"], ["C++", "../build/Release/bsonToJson.node"]]) {
+for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/Release/bsonToJson.node"]]) {
 	const {bsonToJson} = require(loc);
 
 	describe(`bson2json - ${name}`, function () {

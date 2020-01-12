@@ -1,5 +1,11 @@
-Directly converts BSON to a JSON string (stored in a Buffer). Useful for quickly
-sending MongoDB database query results to a client over JSON+HTTP.
+Directly converts a BSON buffer to a JSON string stored in a Buffer. Useful for
+quickly sending MongoDB database query results to a client over JSON+HTTP.
+
+The output of this library should be identical to
+`JSON.stringify(BSON.deserialize(v))`, with one exception: this module writes
+full-precision (64-bit signed) BSON Longs to the JSON buffer. This is valid
+because JSON does not specify a maximum numeric precision, but js-bson instead
+writes an object with low and high bits.
 
 Still a work in progress. Current benchmark with a ~2500-element array of
 medium objects (9MB BSON):
@@ -21,18 +27,15 @@ Major reasons it's fast:
 * SSE2, SSE4.2 or AVX2-accelerated JSON string escaping.
 * AVX2-accelerated ObjectId hex string encoding, using the technique from
   [zbjornson/fast-hex](https://github.com/zbjornson/fast-hex).
-* Fast number encoding, using the methods from [`fmtlib/fmt`](https://github.com/fmtlib/fmt).
-
-This module also writes full-precision (64-bit signed) BSON Longs to the JSON
-buffer. (This is vaild because JSON does not specify a maximum numeric
-precision.) That isn't possible with js-bson as far as I know; it writes an
-object with low and high bits.
+* Fast integer encoding, using the methods from [`fmtlib/fmt`](https://github.com/fmtlib/fmt).
+* Fast double encoding, using the same [double-conversion library](https://github.com/google/double-conversion)
+  used in v8.
 
 TODO:
-* Fix crash when using iterator interface
-* Optimize number (double) (currently uses sprintf)
-* Try to make the `isArray` parameter optional, else document it.
-* Try to squash the remaining v8 deoptimizations in the JS implementation?
+- [ ] Fix read and write overruns.
+- [ ] Fix crash when using iterator interface.
+- [ ] Try to squash the remaining v8 deoptimizations in the JS implementation?
+- [ ] Refactor so it's usable as a C++ library?
 
 ## Benchmarks by BSON type (ops/sec):
 
@@ -42,7 +45,7 @@ TODO:
 | int | 1,655 | 537 | 16,348
 | ObjectId | 1,048 | 784 | 33,403
 | date | 413 | 278 | 1,455
-| number | 1,008 | 318 | 1,240
+| number | 1,008 | 318 | 2060
 | boolean | 440 | 754 | 5,863
 | null | 482 | 723 | 8,696
 | string\<len=1000, esc=0.00><sup>1</sup> | 12,720 | 785 | 54,680
@@ -55,12 +58,15 @@ TODO:
 
 ## Usage
 
-### One-shot
+### One-Shot
 
 > ```ts
-> bsonToJson(bson: Uint8Array): Buffer
+> bsonToJson(bson: Uint8Array, isArray?: boolean = true): Buffer
 > // (note that Buffers extend Uint8Arrays, so `bson` can be a Buffer)
 > ```
+
+`isArray` specifies if the input is an array or not. BSON doesn't differentiate
+between arrays and objects at the top level, so this must be provided.
 
 * Pro: Easy to use.
 * Con: May cause memory [reallocation](https://en.cppreference.com/w/c/memory/realloc)
@@ -69,13 +75,16 @@ TODO:
   however.
 * Con: Entire output must fit in memory.
 
-### Iterator (Streaming)
+### Iterator (Streaming) (C++ only)
 
 > ```ts
-> new Transcoder(bson: Uint8Array,
+> new Transcoder(bson: Uint8Array, isArray?: boolean = true,
 >     options?: ({chunkSize: number}|{fixedBuffer: ArrayBuffer})): Iterator<Buffer>
 > // (note that Buffers extend Uint8Arrays, so `bson` can be a Buffer)
 > ```
+
+`isArray` specifies if the input is an array or not. BSON doesn't differentiate
+between arrays and objects at the top level, so this must be provided.
 
 * `chunkSize` can be specified to limit memory usage. The default value is
   estimated based on the input size and typical BSON expansion ratios such that
@@ -93,13 +102,13 @@ for (const jsonBuf of iterator)
 ```
 With a chunk size to limit memory usage:
 ```js
-const iterator = new Transcoder(data, {chunkSize: 4096});
+const iterator = new Transcoder(data, true, {chunkSize: 4096});
 for (const jsonBuf of iterator)
     res.write(jsonBuf);
 ```
 With a fixed buffer to limit memory usage and potentially improve performance:
 ```js
-const iterator = new Transcoder(data, {fixedBuffer: new ArrayBuffer(4096)});
+const iterator = new Transcoder(data, true, {fixedBuffer: new ArrayBuffer(4096)});
 // jsonBuf is backed by the same memory in each iteration.
 for (const jsonBuf of iterator) {
     // Wait for res to consume the output buffer.

@@ -1,76 +1,23 @@
-#include "napi.h"
 #include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <string.h>
 #include <stdexcept>
 #include <cstdio> // sprintf
-#include <cfloat> // DBL_DIG
 #include <ctime> // strftime
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include "napi.h"
+#include "../deps/double_conversion/double-to-string.h"
+#include "cpu-detection.h"
 
-enum class ISA {
-	BASELINE,
-	SSE2,
-	SSE3,
-	SSSE3,
-	SSE42,
-	AVX,
-	AVX2,
-	AVX512F,
-	AVX512VL,
-	BMI1,
-	BMI2
-};
-
-template<ISA isa> static bool supports() { return false; }
-template<> static bool supports<ISA::BASELINE>() { return true; }
-
-#if defined(__x86_64__) || defined(_M_X64)
+using namespace double_conversion;
 
 #ifdef _MSC_VER
 # include <intrin.h>
 #elif defined(__GNUC__)
 # include <x86intrin.h>
-#endif
-
-constexpr static uint8_t EAX = 0;
-constexpr static uint8_t EBX = 1;
-constexpr static uint8_t ECX = 2;
-constexpr static uint8_t EDX = 3;
-
-static bool cpuid(uint8_t outreg, uint8_t bit, uint32_t initEax, uint32_t initEcx = 0) {
-	uint32_t regs[4];
-#ifdef _MSC_VER
-	__cpuidex(reinterpret_cast<int32_t*>(regs), initEax, initEcx);
-#else
-	asm volatile("cpuid"
-		: "=a" (regs[0]), "=b" (regs[1]), "=c" (regs[2]), "=d" (regs[3])
-		: "0" (initEax), "2" (initEcx));
-#endif
-	return regs[outreg] & (1 << bit);
-}
-
-template<> static bool supports<ISA::SSE2>() { return cpuid(EDX, 26, 1); }
-template<> static bool supports<ISA::SSE3>() { return cpuid(ECX, 0, 1); }
-template<> static bool supports<ISA::SSSE3>() { return cpuid(ECX, 9, 1); }
-template<> static bool supports<ISA::SSE42>() { return cpuid(ECX, 20, 1); }
-template<> static bool supports<ISA::AVX>() { return cpuid(ECX, 28, 1); }
-template<> static bool supports<ISA::AVX2>() { return cpuid(EBX, 5, 7); }
-template<> static bool supports<ISA::AVX512F>() { return cpuid(EBX, 16, 7); }
-template<> static bool supports<ISA::AVX512VL>() { return cpuid(EBX, 31, 7); }
-template<> static bool supports<ISA::BMI1>() { return cpuid(EBX, 3, 7); }
-template<> static bool supports<ISA::BMI2>() { return cpuid(EBX, 8, 7); }
-
-#endif // x86_64
-
-#ifdef _MSC_VER
-// long is 4B in MSVC, 8 Clang and GCC
-constexpr const char* int64spec = "%I64d";
-#else
-constexpr const char* int64spec = "%ld";
 #endif
 
 using std::size_t;
@@ -110,12 +57,13 @@ const char digits[] =
 	"6061626364656667686970717273747576777879"
 	"8081828384858687888990919293949596979899";
 
-constexpr size_t INT32_BUF_DIGS = 11;
-constexpr size_t INT64_BUF_DIGS = 20;
+template<typename T> constexpr size_t INT_BUF_DIGS = 0;
+template<> constexpr size_t INT_BUF_DIGS<int32_t> = 11;
+template<> constexpr size_t INT_BUF_DIGS<int64_t> = 20;
 
 template<typename T>
 size_t fast_itoa(uint8_t* &p, T val) {
-	p += 10;
+	p += INT_BUF_DIGS<T>;
 	size_t n = 0;
 
 	const bool isNegative = val < 0;
@@ -257,7 +205,6 @@ public:
 	}
 
 	bool isDone() {
-		//std::cout << "remaining: " << (inLen - inIdx) << std::endl;
 		return inIdx == inLen;
 	}
 
@@ -586,7 +533,7 @@ private:
 	}
 
 	template<ISA isa>
-	void transcodeObjectId() {
+	inline void transcodeObjectId() {
 		out[outIdx++] = '"';
 		const size_t end = inIdx + 12;
 		while (inIdx < end) {
@@ -712,7 +659,7 @@ private:
 			}
 			case BSON_DATA_INT: {
 				const int32_t value = readLE<int32_t>();
-				uint8_t temp[INT32_BUF_DIGS];
+				uint8_t temp[INT_BUF_DIGS<int32_t>];
 				uint8_t* temp_p = temp;
 				size_t n = fast_itoa(temp_p, value);
 				ensureSpace(n);
@@ -723,9 +670,12 @@ private:
 			case BSON_DATA_NUMBER: {
 				const double value = readLE<double>();
 				if (std::isfinite(value)) {
-					ensureSpace(25); // TODO
-					const int n = sprintf(reinterpret_cast<char*>(out + outIdx), "%.*f", DBL_DECIMAL_DIG, value);
-					outIdx += n;
+					constexpr size_t kBufferSize = 128;
+					ensureSpace(kBufferSize);
+					StringBuilder sb(reinterpret_cast<char*>(out + outIdx), kBufferSize);
+					auto& dc = DoubleToStringConverter::EcmaScriptConverter();
+					dc.ToShortest(value, &sb);
+					outIdx += sb.position();
 				} else {
 					ensureSpace(4);
 					out[outIdx++] = 'n';
@@ -790,7 +740,7 @@ private:
 			}
 			case BSON_DATA_LONG: {
 				const int64_t value = readLE<int64_t>();
-				uint8_t temp[INT64_BUF_DIGS];
+				uint8_t temp[INT_BUF_DIGS<int64_t>];
 				uint8_t* temp_p = temp;
 				size_t n = fast_itoa(temp_p, value);
 				ensureSpace(n);
