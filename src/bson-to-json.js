@@ -42,6 +42,20 @@ const TRUE = Buffer.from("true");
 const FALSE = Buffer.from("false");
 const NULL = Buffer.from("null");
 
+// Returns the number of digits in a null-terminated string representation of v.
+function nDigits(v) {
+	if (v < 10) return 2;
+	if (v < 100) return 3;
+	if (v < 1_000) return 4;
+	if (v < 10_000) return 5;
+	if (v < 100_000) return 6;
+	if (v < 1_000_000) return 7;
+	if (v < 10_000_000) return 8;
+	if (v < 100_000_000) return 9;
+	if (v < 1_000_000_000) return 10;
+	return 11;
+}
+
 // ECMA-262 Table 65 (sec. 24.5.2.2)
 const ESCAPES = {
 	0x08: 'b'.charCodeAt(0),
@@ -188,7 +202,7 @@ class Transcoder {
 		if (size < 5 || size > bufLen)
 			throw new Error('corrupt bson message');
 
-		let first = true;
+		let arrIdx = 0;
 
 		out[this.outIdx++] = isArray? OPENSQ : OPENCURL;
 
@@ -198,31 +212,32 @@ class Transcoder {
 			// If we get a zero it's the last byte, exit
 			if (elementType === 0) break;
 
-			if (first) {
-				first = false;
-			} else {
+			if (arrIdx) {
 				out[this.outIdx++] = COMMA;
 			}
 
-			// Name is a null-terminated string. TODO we can copy bytes as we
-			// search.
-			let nameStart = index;
-			let nameEnd = index;
-			while (buffer[nameEnd] !== 0x00 && nameEnd < bufLen) {
-				nameEnd++;
-			}
+			if (isArray) {
+				// Skip the number of digits in the key.
+				index += nDigits(arrIdx);
+			} else {
+				// Name is a null-terminated string. TODO we can copy bytes as
+				// we search.
+				let nameStart = index;
+				let nameEnd = index;
+				while (buffer[nameEnd] !== 0x00 && nameEnd < bufLen) {
+					nameEnd++;
+				}
+	
+				if (nameEnd >= bufLen)
+					throw new Error('Bad BSON Document: illegal CString');
 
-			if (nameEnd >= bufLen)
-				throw new Error('Bad BSON Document: illegal CString');
-
-			if (!isArray) {
 				out[this.outIdx++] = QUOTE;
 				this.writeStringRange(out, buffer, nameStart, nameEnd);
 				out[this.outIdx++] = QUOTE;
 				out[this.outIdx++] = COLON;
-			}
 
-			index = nameEnd + 1;
+				index = nameEnd + 1;
+			}
 
 			switch (elementType) {
 				case BSON_DATA_STRING: {
@@ -345,6 +360,8 @@ class Transcoder {
 					throw new Error('Detected unknown BSON type ' +
 						elementType.toString(16));
 			}
+
+			arrIdx++;
 		}
 
 		out[this.outIdx++] = isArray ? CLOSESQ : CLOSECURL;

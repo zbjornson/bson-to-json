@@ -1,7 +1,8 @@
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
+#include <cstring> // memcpy
 #include <ctime> // strftime
+#include <cmath> // isfinite
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -47,7 +48,7 @@ constexpr uint8_t BSON_DATA_MAX_KEY = 0x7f;
 
 // Adaptetd from https://github.com/fmtlib/fmt/blob/master/include/fmt/format.h#L2818,
 // MIT license
-const char digits[] =
+constexpr const char digits[] =
 	"0001020304050607080910111213141516171819"
 	"2021222324252627282930313233343536373839"
 	"4041424344454647484950515253545556575859"
@@ -107,12 +108,29 @@ inline static uint8_t getEscape(uint8_t c) {
 	}
 }
 
-const char HEX_DIGITS[] = "0123456789abcdef";
+constexpr const char HEX_DIGITS[] = "0123456789abcdef";
 
 inline static constexpr uint8_t hexNib(uint8_t nib) {
 	// These appear equally fast.
 	return HEX_DIGITS[nib];
 	// return nib + (nib < 10 ? 48 : 87);
+}
+
+// Returns the number of base-10 digits in a null-terminated string
+// representation of v. Assumes relatively small arrays. See
+// https://stackoverflow.com/a/1489873/1218408 for a version that might be
+// better for medium and large arrays.
+inline static constexpr size_t nDigits(int32_t v) {
+	if (v < 10) return 2;
+	if (v < 100) return 3;
+	if (v < 1'000) return 4;
+	if (v < 10'000) return 5;
+	if (v < 100'000) return 6;
+	if (v < 1'000'000) return 7;
+	if (v < 10'000'000) return 8;
+	if (v < 100'000'000) return 9;
+	if (v < 1'000'000'000) return 10;
+	return 11;
 }
 
 #define ENSURE_SPACE_OR_RETURN(n) if (ensureSpace(n)) return true
@@ -131,7 +149,7 @@ public:
 	uint8_t* out = nullptr;
 	size_t outIdx = 0;
 	size_t outLen = 0;
-	char* err = nullptr;
+	char const* err = nullptr;
 
 	/// <summary>
 	/// Transcodes the BSON document to JSON. Call once per lifetime of the
@@ -617,7 +635,7 @@ private:
 			return true;
 		}
 
-		bool first = true;
+		int32_t arrIdx = 0;
 
 		ENSURE_SPACE_OR_RETURN(1);
 		out[outIdx++] = isArray ? '[' : '{';
@@ -626,9 +644,7 @@ private:
 			const uint8_t elementType = in[inIdx++];
 			if (elementType == 0) break;
 
-			if (first) {
-				first = false;
-			} else {
+			if (arrIdx) {
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = ',';
 			}
@@ -643,13 +659,7 @@ private:
 					out[outIdx++] = '"';
 					out[outIdx++] = ':';
 				} else {
-					size_t strsz = inLen - inIdx;
-					const size_t namelen = strnlen(reinterpret_cast<const char*>(in + inIdx), strsz);
-					if (namelen == strsz) {
-						err = "Name terminator not found";
-						return true;
-					}
-					inIdx += namelen + 1;
+					inIdx += nDigits(arrIdx);
 				}
 			}
 
@@ -790,6 +800,8 @@ private:
 				err = "Unknown BSON type";
 				return true;
 			}
+
+			arrIdx++;
 		}
 
 		ENSURE_SPACE_OR_RETURN(1);
