@@ -30,11 +30,14 @@ Major reasons it's fast:
 * Fast integer encoding, using the methods from [`fmtlib/fmt`](https://github.com/fmtlib/fmt).
 * Fast double encoding, using the same [double-conversion library](https://github.com/google/double-conversion)
   used in v8.
+* Skips decoding array keys (which BSON stores as ASCII numbers) and instead
+  advances by the known number of bytes in the key.
 
 TODO:
 - [ ] Fix read and write overruns.
 - [ ] Fix crash when using iterator interface.
 - [ ] Optimize date printing.
+- [ ] The JS impl is incomplete (output bounds checking).
 - [ ] Try to squash the remaining v8 deoptimizations in the JS implementation?
 - [ ] Refactor so it's usable as a C++ library?
 
@@ -42,13 +45,13 @@ TODO:
 
 | Type | js-bson | this, JS | this, CPP (AVX2) |
 | ---- | ---: | ---: | ---: |
-| long | 1,928 | 390 | 36,918
-| int | 1,655 | 537 | 16,348
-| ObjectId | 1,048 | 784 | 33,403
-| date | 413 | 278 | 2,011
-| number | 1,008 | 318 | 2,060
-| boolean | 440 | 754 | 5,863
-| null | 482 | 723 | 8,696
+| long | 1,928 | 390 | 28,404
+| int | 1,655 | 537 | 16,684
+| ObjectId | 1,048 | 784 | 37,079
+| date | 413 | 278 | 2,137
+| number | 1,008 | 318 | 2,132
+| boolean | 440 | 754 | 8,265
+| null | 482 | 723 | 11,397
 | string\<len=1000, esc=0.00><sup>1</sup> | 12,720 | 785 | 54,680
 | string\<len=1000, esc=0.01> | 12,202 | 723 | 47,613
 | string\<len=1000, esc=0.05> | 11,595 | 756 | 40,777
