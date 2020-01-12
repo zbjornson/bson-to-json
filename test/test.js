@@ -7,6 +7,7 @@ const bson = require("bson");
 // Exercises all JSON types and nuances of JSON serialization.
 const doc1 = {
 	string: "string\tdata\n",
+	"": "", // zero-length string
 	objectId: new bson.ObjectId(),
 	int: 1,
 	int2: -2345718,

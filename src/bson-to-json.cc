@@ -1,7 +1,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring> // memcpy
-#include <ctime> // strftime
+#include <ctime> // gmtime
 #include <cmath> // isfinite
 #include <thread>
 #include <mutex>
@@ -23,6 +23,7 @@ using std::uint8_t;
 using std::int32_t;
 using std::uint32_t;
 using std::int64_t;
+using std::memcpy;
 
 constexpr uint8_t BSON_DATA_NUMBER = 1;
 constexpr uint8_t BSON_DATA_STRING = 2;
@@ -59,6 +60,7 @@ template<typename T> constexpr size_t INT_BUF_DIGS = 0;
 template<> constexpr size_t INT_BUF_DIGS<int32_t> = 11;
 template<> constexpr size_t INT_BUF_DIGS<int64_t> = 20;
 
+// TODO dates can specialize on being 2 digits for mm, dd, hh, mm, ss
 template<typename T>
 size_t fast_itoa(uint8_t* &p, T val) {
 	p += INT_BUF_DIGS<T>;
@@ -247,7 +249,7 @@ private:
 	template<typename T>
 	inline T readLE() {
 		T v;
-		std::memcpy(&v, in + inIdx, sizeof(T));
+		memcpy(&v, in + inIdx, sizeof(T));
 		inIdx += sizeof(T);
 		return v;
 	}
@@ -316,26 +318,138 @@ private:
 		return false;
 	}
 
+	// The load/store methods must be small and inlinable in the fast case (not
+	// at end of in or out, which is almost always). The slow case should be
+	// reached with a `call` and there's not much point to optimize it.
+
+	__m128i load_partial_128i_slow(size_t n) {
+		// TODO compare against a right-aligned load + shuffle when possible.
+		// TODO compare against AVX512VL+BW _mm_mask_loadu_epi8.
+		uint8_t x[16];
+		for (int i = 0; i < n; i++) x[i] = in[inIdx + i];
+		return _mm_loadu_si128(reinterpret_cast<__m128i*>(x));
+	}
+
+	// Safely loads n bytes. The values in xmm beyond n are undefined.
+	inline __m128i load_partial_128i(size_t n) {
+		// Do a full load if we're 16B from the end of the input.
+		// Other acceptable criteria:
+		// n == 16
+		// (reinterpret_cast<intptr_t>(in + inIdx) & 0xFFF) < 0xFF0 (16B from page boundary)
+		if (n + inIdx < inLen) [[likely]] {
+			return _mm_loadu_si128(reinterpret_cast<__m128i const*>(&in[inIdx]));
+		}
+
+		return load_partial_128i_slow(n);
+	}
+
+	__m256i load_partial_256i_slow(size_t n) {
+		if (n <= 16)
+			return _mm256_castsi128_si256(load_partial_128i(n));
+
+		__m128i lo = _mm_loadu_si128(reinterpret_cast<__m128i const*>(in + inIdx));;
+		inIdx += 16;
+		__m128i hi = load_partial_128i(n - 16);
+		inIdx -= 16;
+		return _mm256_inserti128_si256(_mm256_castsi128_si256(lo), hi, 1);
+	}
+
+	// Safely loads n bytes. The values in ymm beyond n are undefined.
+	inline __m256i load_partial_256i(size_t n) {
+		// debug assert n != 0 && n <= 32
+		
+		// Other acceptable criteria:
+		// n == 32
+		// (reinterpret_cast<intptr_t>(in + inIdx) & 0xFFF) < 0xFE0 (32B from page boundary)
+		if (n + inIdx < inLen) [[likely]] {
+			return _mm256_loadu_si256(reinterpret_cast<__m256i const*>(&in[inIdx]));
+		}
+
+		return load_partial_256i_slow(n);
+	}
+
+	void store_partial_128i_slow(__m128i v, size_t n) {
+		// maskmovdqu is implicitly NT.
+		// Does AVX512BW have fast byte-granular store?
+		// pblendvb for load+blend+store requires SSE4.1 and this has to work with SSE2.
+		// TODO Try _mm_storeu_si128(temp, v), memcpy(out + outIdx, temp, n)?
+		union {
+			int8_t  i8[16];
+			int16_t i16[8];
+			int32_t i32[4];
+			int64_t i64[2];
+		} u;
+		_mm_storeu_si128(reinterpret_cast<__m128i*>(u.i8), v);
+		int j = 0;
+		if (n & 8) {
+			*reinterpret_cast<int64_t*>(out + outIdx) = u.i64[0];
+			j += 8;
+		}
+		if (n & 4) {
+			reinterpret_cast<int32_t*>(out + outIdx)[j >> 2] = u.i32[j >> 2];
+			j += 4;
+		}
+		if (n & 2) {
+			reinterpret_cast<int16_t*>(out + outIdx)[j >> 1] = u.i16[j >> 1];
+			j += 2;
+		}
+		if (n & 1) {
+			out[outIdx + j] = u.i8[j];
+		}
+	}
+
+	// Safely stores n bytes. May write more than n bytes.
+	inline void store_partial_128i(__m128i v, size_t n) {
+		if (n + outIdx < outLen) [[likely]] { // TODO try with (n == 16)
+			return _mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), v);
+		}
+		store_partial_128i_slow(v, n);
+	}
+
+	void store_partial_256i_slow(__m256i v, size_t n) {
+		store_partial_128i(_mm256_castsi256_si128(v), n);
+		if (n > 16)
+			store_partial_128i(_mm256_extracti128_si256(v, 1), n - 16);
+	}
+
+	// Safely stores n bytes. May write more than n bytes.
+	inline void store_partial_256i(__m256i v, size_t n) {
+		if (n + outIdx < outLen) [[likely]] { // TODO try with (n == 32)
+			return _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), v);
+		}
+		store_partial_256i_slow(v, n);
+	}
+
 	template<Mode mode>
-	bool writeEscapedChars(size_t n, Enabler<ISA::SSE42>) {
+	bool writeEscapedChars(size_t n, Enabler<ISA::SSE2>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
 
-		const __m128i escapes = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x5c,0x5c, 0x22,0x22, 0x1f,0);
+		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
+
+		// xor 0x80 to get unsigned comparison. https://stackoverflow.com/q/32945410/1218408
+		__m128i esch20 = _mm_set1_epi8(0x20 ^ 0x80);
+		__m128i esch22 = _mm_set1_epi8(0x22);
+		__m128i esch5c = _mm_set1_epi8(0x5c);
 
 		while (inIdx < end) {
-			const int clampedN = n > 16 ? 16 : n;
-			__m128i chars = _mm_loadu_si128(reinterpret_cast<__m128i const*>(&in[inIdx])); // TODO this can overrun
-			int esRIdx = _mm_cmpestri(escapes, 6, chars, n,
-				_SIDD_UBYTE_OPS | _SIDD_CMP_RANGES | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT);
+			const size_t clampedN = n > 16 ? 16 : n;
+			__m128i chars = load_partial_128i(clampedN);
 
-			if (esRIdx == 16) {
+			// see above (unsigned comparison)
+			__m128i iseq = _mm_cmpgt_epi8(esch20, _mm_xor_si128(chars, _mm_set1_epi8(0x80)));
+			iseq = _mm_or_si128(iseq, _mm_cmpeq_epi8(chars, esch22));
+			iseq = _mm_or_si128(iseq, _mm_cmpeq_epi8(chars, esch5c));
+
+			uint32_t mask = _mm_movemask_epi8(iseq);
+			uint32_t esRIdx = _tzcnt_u32(mask);
+
+			if (esRIdx > clampedN) {
 				// No chars need escaping.
 				esRIdx = clampedN;
 			}
 
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
-			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
+			store_partial_128i(chars, esRIdx);
 			n -= esRIdx;
 			outIdx += esRIdx;
 			inIdx += esRIdx;
@@ -358,36 +472,22 @@ private:
 	}
 
 	template<Mode mode>
-	bool writeEscapedChars(size_t n, Enabler<ISA::SSE2>) {
+	bool writeEscapedChars(size_t n, Enabler<ISA::SSE42>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
 
-		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
-
-		// xor 0x80 to get unsigned comparison. https://stackoverflow.com/q/32945410/1218408
-		__m128i esch20 = _mm_set1_epi8(0x20 ^ 0x80);
-		__m128i esch22 = _mm_set1_epi8(0x22);
-		__m128i esch5c = _mm_set1_epi8(0x5c);
+		const __m128i escapes = _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x5c,0x5c, 0x22,0x22, 0x1f,0);
 
 		while (inIdx < end) {
-			const size_t clampedN = n > 16 ? 16 : n;
-			__m128i chars = _mm_loadu_si128(reinterpret_cast<__m128i const*>(&in[inIdx])); // TODO this can overrun (okay except at end)
+			const int clampedN = n > 16 ? 16 : n;
+			__m128i chars = load_partial_128i(clampedN);
+			int esRIdx = _mm_cmpestri(escapes, 6, chars, n,
+				_SIDD_UBYTE_OPS | _SIDD_CMP_RANGES | _SIDD_POSITIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT);
 
-			// see above (unsigned comparison)
-			__m128i iseq = _mm_cmpgt_epi8(esch20, _mm_xor_si128(chars, _mm_set1_epi8(0x80)));
-			iseq = _mm_or_si128(iseq, _mm_cmpeq_epi8(chars, esch22));
-			iseq = _mm_or_si128(iseq, _mm_cmpeq_epi8(chars, esch5c));
-
-			uint32_t mask = _mm_movemask_epi8(iseq);
-			uint32_t esRIdx = _tzcnt_u32(mask);
-
-			if (esRIdx > clampedN) {
-				// No chars need escaping.
+			if (esRIdx == 16) // No chars need escaping.
 				esRIdx = clampedN;
-			}
 
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
-			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
+			store_partial_128i(chars, esRIdx);
 			n -= esRIdx;
 			outIdx += esRIdx;
 			inIdx += esRIdx;
@@ -423,7 +523,7 @@ private:
 
 		while (inIdx < end) {
 			const size_t clampedN = n > 32 ? 32 : n;
-			__m256i chars = _mm256_loadu_si256(reinterpret_cast<__m256i const*>(&in[inIdx])); // TODO this can overrun (okay except at end)
+			__m256i chars = load_partial_256i(clampedN);
 
 			// see above (unsigned comparison)
 			__m256i iseq = _mm256_cmpgt_epi8(esch20, _mm256_xor_si256(chars, _mm256_set1_epi8(0x80)));
@@ -433,13 +533,10 @@ private:
 			uint32_t mask = _mm256_movemask_epi8(iseq);
 			uint32_t esRIdx = _tzcnt_u32(mask);
 
-			if (esRIdx > clampedN) {
-				// No chars need escaping.
+			if (esRIdx > clampedN) // No chars need escaping.
 				esRIdx = clampedN;
-			}
 
-			_mm256_storeu_si256(reinterpret_cast<__m256i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
-			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
+			store_partial_256i(chars, esRIdx);
 			n -= esRIdx;
 			outIdx += esRIdx;
 			inIdx += esRIdx;
@@ -498,8 +595,7 @@ private:
 				_SIDD_UBYTE_OPS | _SIDD_CMP_RANGES | _SIDD_NEGATIVE_POLARITY | _SIDD_LEAST_SIGNIFICANT);
 
 			ENSURE_SPACE_OR_RETURN(esRIdx);
-			_mm_storeu_si128(reinterpret_cast<__m128i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
-			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
+			store_partial_128i(chars, esRIdx);
 			outIdx += esRIdx;
 			inIdx += esRIdx;
 
@@ -526,15 +622,15 @@ private:
 	bool writeEscapedChars(Enabler<ISA::AVX2>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
-		// TODO see explicit length version's handling of unsigned comparison.
-		__m256i esch20 = _mm256_set1_epi8(0x20);
+		// xor 0x80 to get unsigned comparison. https://stackoverflow.com/q/32945410/1218408
+		__m256i esch20 = _mm256_set1_epi8(0x20 ^ 0x80);
 		__m256i esch22 = _mm256_set1_epi8(0x22);
 		__m256i esch5c = _mm256_set1_epi8(0x5c);
 
 		while (inIdx < inLen) {
-			__m256i chars = _mm256_loadu_si256(reinterpret_cast<__m256i const*>(&in[inIdx])); // TODO this can overrun
+			__m256i chars = load_partial_256i(32);
 
-			__m256i iseq = _mm256_cmpgt_epi8(esch20, chars);
+			__m256i iseq = _mm256_cmpgt_epi8(esch20, _mm256_xor_si256(chars, _mm256_set1_epi8(0x80)));
 			iseq = _mm256_or_si256(iseq, _mm256_cmpeq_epi8(chars, esch22));
 			iseq = _mm256_or_si256(iseq, _mm256_cmpeq_epi8(chars, esch5c));
 
@@ -542,8 +638,7 @@ private:
 			uint32_t esRIdx = _tzcnt_u32(mask); // position of 0 *or* a char that needs to be escaped
 
 			ENSURE_SPACE_OR_RETURN(esRIdx);
-			_mm256_storeu_si256(reinterpret_cast<__m256i*>(&out[outIdx]), chars); // TODO this overruns (okay except at end)
-			//memcpy(&out[outIdx], &in[inIdx], esRIdx);
+			store_partial_256i(chars, esRIdx);
 			outIdx += esRIdx;
 			inIdx += esRIdx;
 
@@ -581,13 +676,7 @@ private:
 	// TODO SSSE3: 128-bit pshufb
 
 	inline void transcodeObjectId(Enabler<ISA::AVX2>) {
-		// TODO mask load is 4,0.5, load is 3,0.5. Overrun the load where possible:
-		// if (not at end of buffer) {
-		//	 __m128i a = _mm_loadu_si128(reinterpret_cast<__m128i const*>(in + inIdx));
-		// } else {
-		__m128i loadmask = _mm_set_epi32(0, 0x80000000, 0x80000000, 0x80000000); // 12B = 3x4B
-		__m128i a = _mm_maskload_epi32(reinterpret_cast<int const*>(in + inIdx), loadmask);
-		// }
+		__m128i a = load_partial_128i(12);
 		inIdx += 12;
 
 		// Technique from https://github.com/zbjornson/fast-hex
@@ -608,20 +697,7 @@ private:
 		__m256i b = _mm256_shuffle_epi8(HEX_LUTR, bytes);
 
 		out[outIdx++] = '"';
-		// TODO mask store is 14,1, store is 3,1. Overrun the store where possible:
-		// if (not at end of buffer) {
-		//   _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), b);
-		// } else {
-		
-		// Split store:
-		// _mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), _mm256_castsi256_si128(b)); // 16B
-		// *reinterpret_cast<uint64_t*>(out + outIdx + 16) = _mm256_extract_epi64(b, 3);
-
-		// Masked store:
-		__m256i storemask = _mm256_set_epi32(0, 0, 0x80000000, 0x80000000,
-			0x80000000, 0x80000000, 0x80000000, 0x80000000); // 24B = 6x4B
-		_mm256_maskstore_epi32(reinterpret_cast<int*>(out + outIdx), storemask, b);
-		// }
+		store_partial_256i(b, 24);
 		outIdx += 24;
 		out[outIdx++] = '"';
 	}

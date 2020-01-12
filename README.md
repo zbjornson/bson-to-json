@@ -14,10 +14,10 @@ medium objects (9MB BSON):
 | ------ | --------: |
 | `JSON.stringify(BSON.deserialize(arr))`<sup>1</sup> | 226 |
 | this, JS | 27.4 |
-| this, portable C++ | 20.2 |
-| this, SSE2 | 14.8 |
-| this, SSE4.2 | 10.8 |
-| this, AVX2 | 10.0 |
+| this, portable C++ | 20.6 |
+| this, SSE2 | 15.2 |
+| this, SSE4.2 | 11.5 |
+| this, AVX2 | 10.6 |
 
 <sup>1</sup> `BSON.deserialize` is the [official MongoDB js-bson implementation](https://github.com/mongodb/js-bson).
 
@@ -34,10 +34,9 @@ Major reasons it's fast:
   advances by the known number of bytes in the key.
 
 TODO:
-- [ ] Fix read and write overruns.
 - [ ] Fix crash when using iterator interface.
-- [ ] Try to reduce register spill
 - [ ] The JS impl is incomplete (output bounds checking).
+- [ ] Try to reduce register spill
 - [ ] Try to squash the remaining v8 deoptimizations in the JS implementation?
 - [ ] Refactor so it's usable as a C++ library?
 
