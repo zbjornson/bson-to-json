@@ -1,7 +1,7 @@
 //@ts-check
 'use strict';
 
-const {transcode: transcodeBytes, Buffer} = require("buffer");
+const {Buffer} = require("buffer");
 const Long = require("long");
 
 const BSON_DATA_NUMBER = 1;
@@ -98,25 +98,33 @@ class Transcoder {
 	}
 
 	/**
-	 * @param {Buffer} buffer
+	 * @param {Buffer} input BSON-encoded input.
+	 * @param {boolean} isArray BSON stores arrays and objects in the same
+	 * format (arrrays are objects with numerical keys stored as strings).
+	 * @public
 	 */
-	transcode(buffer, isArray = true) {
-		const index = 0;
-
-		const size = readInt32LE(buffer, index);
-
-		if (size > buffer.length)
-			throw new Error(`(bson size ${size} must be <= buffer length ${buffer.length})`);
-
-		// Illegal end value
-		if (buffer[index + size - 1] !== 0) {
-			throw new Error("One object, sized correctly, with a spot for an EOO, but the EOO isn't 0x00");
-		}
-
-		const out = Buffer.alloc(1e8); // TODO overrun protection
+	transcode(input, isArray = true) {
+		// Estimate outLen at 2.5x inLen. (See C++ for explanation.)
+		// TODO is it noticeable if this is the next multiple of 4096?
+		this.out = Buffer.alloc((input.length * 10) >> 2);
 		this.outIdx = 0;
-		this.transcodeObject(out, buffer, index, isArray);
-		return out.slice(0, this.outIdx);
+		this.transcodeObject(input, 0, isArray);
+		return this.out.slice(0, this.outIdx);
+	}
+
+	/**
+	 * @param {number} n
+	 * @returns {boolean} true if reallocation happened.
+	 */
+	ensureSpace(n) {
+		if (this.outIdx + n < this.out.length)
+			return false;
+		
+		const oldOut = this.out;
+		const newOut = Buffer.alloc((oldOut.length * 3) >> 1);
+		oldOut.copy(newOut);
+		this.out = newOut;
+		return true;
 	}
 
 	/**
@@ -131,22 +139,27 @@ class Transcoder {
 	 * unrecognized or unrepresentable character). Thus there's nothing we can
 	 * do in the decoder to instead emit escape sequences.
 	 *
-	 * @param {Buffer} out
 	 * @param {Buffer} str
-	 * @param {number} start
-	 * @param {number} end
+	 * @param {number} start Inclusive.
+	 * @param {number} end Exclusive.
 	 * @private
 	 */
-	writeStringRange(out, str, start, end) {
+	writeStringRange(str, start, end) {
+		this.ensureSpace(end - start);
+		let out = this.out;
 		for (let i = start; i < end; i++) {
 			const c = str[i];
 			let xc;
-			if (c >= 0x20 && c !== 0x22 && c !== 0x5c) { // no escape
+			if (c >= 0x20 /* & 0xe0*/ && c !== 0x22 && c !== 0x5c) { // no escape
 				out[this.outIdx++] = c;
 			} else if ((xc = ESCAPES[c])) { // single char escape
+				this.ensureSpace(end - i + 1);
+				out = this.out;
 				out[this.outIdx++] = BACKSLASH;
 				out[this.outIdx++] = xc;
 			} else { // c < 0x20, control
+				this.ensureSpace(end - i + 5);
+				out = this.out;
 				out[this.outIdx++] = BACKSLASH;
 				out[this.outIdx++] = LOWERCASE_U;
 				out[this.outIdx++] = ZERO;
@@ -158,12 +171,17 @@ class Transcoder {
 	}
 
 	/**
-	 * This is the same speed as a 16B LUT and a 512B LUT, and doesn't pollute
-	 * the cache. js-bson is still winning in the ObjectId benchmark though,
-	 * despite having extra copying and a call into C++.
+	 * @param {Buffer} buffer
+	 * @param {Number} start
 	 * @private
 	 */
-	writeObjectId(out, buffer, start) {
+	writeObjectId(buffer, start) {
+		// This is the same speed as a 16B LUT and a 512B LUT, and doesn't
+		// pollute the cache. js-bson is still winning in the ObjectId benchmark
+		// though, despite having extra copying and a call into C++.
+		this.ensureSpace(26);
+		const out = this.out;
+		this.out[this.outIdx++] = QUOTE;
 		for (let i = start; i < start + 12; i++) {
 			const byte = buffer[i];
 			const hi = byte >>> 4;
@@ -171,200 +189,195 @@ class Transcoder {
 			out[this.outIdx++] = hex(hi);
 			out[this.outIdx++] = hex(lo);
 		}
-	}
-
-	addQuotedStringRange(out, buffer, valStart, valEnd) {
-		out[this.outIdx++] = QUOTE;
-		this.writeStringRange(out, buffer, valStart, valEnd);
-		out[this.outIdx++] = QUOTE;
-	}
-	addQuotedVal(out, val) {
-		out[this.outIdx++] = QUOTE;
-		for (let i = 0; i < val.length; i++) out[this.outIdx++] = val[i];
-		out[this.outIdx++] = QUOTE;
-	}
-	addVal(out, val) {
-		for (let i = 0; i < val.length; i++) out[this.outIdx++] = val[i];
+		this.out[this.outIdx++] = QUOTE;
 	}
 
 	/**
-	 * @param {Buffer} out
-	 * @param {Buffer} buffer
-	 * @param {number} index
+	 * @param {Buffer} val
+	 * @private
+	 */
+	addQuotedVal(val) {
+		this.ensureSpace(val.length + 2);
+		const out = this.out;
+		out[this.outIdx++] = QUOTE;
+		for (let i = 0; i < val.length; i++)
+			out[this.outIdx++] = val[i];
+		out[this.outIdx++] = QUOTE;
+	}
+
+	/**
+	 * @param {Buffer} val
+	 * @private
+	 */
+	addVal(val) {
+		this.ensureSpace(val.length);
+		const out = this.out;
+		for (let i = 0; i < val.length; i++)
+			out[this.outIdx++] = val[i];
+	}
+
+	/**
+	 * @param {Buffer} in_
+	 * @param {number} inIdx
 	 * @param {boolean} isArray
 	 * @private
 	 */
-	transcodeObject(out, buffer, index, isArray) {
-		const bufLen = buffer.length;
-		const size = readInt32LE(buffer, index);
-		index += 4;
+	transcodeObject(in_, inIdx, isArray) {
+		const inLen = in_.length;
+		const size = readInt32LE(in_, inIdx);
+		inIdx += 4;
 
-		if (size < 5 || size > bufLen)
-			throw new Error('corrupt bson message');
+		if (size < 5)
+			throw new Error("BSON size must be >=5");
+		if (size > inLen) // TODO + inIdx?
+			throw new Error("BSON size exceeds input length.")
 
 		let arrIdx = 0;
 
-		out[this.outIdx++] = isArray? OPENSQ : OPENCURL;
+		this.ensureSpace(1);
+		this.out[this.outIdx++] = isArray? OPENSQ : OPENCURL;
 
 		while (true) {
-			const elementType = buffer[index++];
-
-			// If we get a zero it's the last byte, exit
+			const elementType = in_[inIdx++];
 			if (elementType === 0) break;
 
 			if (arrIdx) {
-				out[this.outIdx++] = COMMA;
+				this.ensureSpace(1);
+				this.out[this.outIdx++] = COMMA;
 			}
 
 			if (isArray) {
 				// Skip the number of digits in the key.
-				index += nDigits(arrIdx);
+				inIdx += nDigits(arrIdx);
 			} else {
 				// Name is a null-terminated string. TODO we can copy bytes as
 				// we search.
-				let nameStart = index;
-				let nameEnd = index;
-				while (buffer[nameEnd] !== 0x00 && nameEnd < bufLen) {
+				let nameStart = inIdx;
+				let nameEnd = inIdx;
+				while (in_[nameEnd] !== 0 && nameEnd < inLen)
 					nameEnd++;
-				}
 	
-				if (nameEnd >= bufLen)
+				if (nameEnd >= inLen)
 					throw new Error('Bad BSON Document: illegal CString');
 
-				out[this.outIdx++] = QUOTE;
-				this.writeStringRange(out, buffer, nameStart, nameEnd);
-				out[this.outIdx++] = QUOTE;
-				out[this.outIdx++] = COLON;
-
-				index = nameEnd + 1;
+				this.ensureSpace(1);
+				this.out[this.outIdx++] = QUOTE;
+				this.writeStringRange(in_, nameStart, nameEnd);
+				inIdx = nameEnd + 1; // +1 to skip null terminator
+				this.ensureSpace(2);
+				this.out[this.outIdx++] = QUOTE;
+				this.out[this.outIdx++] = COLON;
 			}
 
 			switch (elementType) {
-				case BSON_DATA_STRING: {
-					const stringSize = readInt32LE(buffer, index);
-					index += 4;
-					if (
-						stringSize <= 0 ||
-						stringSize > bufLen - index ||
-						buffer[index + stringSize - 1] !== 0 // TODO this is bad for cache access
-					)
-						throw new Error('bad string length in bson');
+			case BSON_DATA_STRING: {
+				const size = readInt32LE(in_, inIdx);
+				inIdx += 4;
+				if (size <= 0 || size > inLen - inIdx)
+					throw new Error("Bad string length");
 
-					// if (!validateUtf8(buffer, index, index + stringSize - 1))
-					// 	throw new Error('Invalid UTF-8 string in BSON document');
-
-					this.addQuotedStringRange(out, buffer, index, index + stringSize - 1);
-
-					index += stringSize;
-					break;
+				this.ensureSpace(1 + size);
+				this.out[this.outIdx++] = QUOTE;
+				this.writeStringRange(in_, inIdx, inIdx + size - 1);
+				inIdx += size;
+				this.ensureSpace(1);
+				this.out[this.outIdx++] = QUOTE;
+				break;
+			}
+			case BSON_DATA_OID: {
+				this.writeObjectId(in_, inIdx);
+				inIdx += 12;
+				break;
+			}
+			case BSON_DATA_INT: {
+				const value = readInt32LE(in_, inIdx);
+				inIdx += 4;
+				// JS impl of fast_itoa is slower than this.
+				this.addVal(Buffer.from(value.toString()));
+				break;
+			}
+			case BSON_DATA_NUMBER: {
+				// const value = in_.readDoubleLE(inIdx); // not sure which is faster TODO
+				const value = readDoubleLE(in_, inIdx);
+				inIdx += 8;
+				if (Number.isFinite(value)) {
+					this.addVal(Buffer.from(value.toString()));
+				} else {
+					this.addVal(NULL);
 				}
-				case BSON_DATA_OID: {
-					out[this.outIdx++] = QUOTE;
-					this.writeObjectId(out, buffer, index);
-					out[this.outIdx++] = QUOTE;
-
-					index += 12;
-					break;
+				break;
+			}
+			case BSON_DATA_DATE: {
+				const lowBits = readInt32LE(in_, inIdx);
+				inIdx += 4;
+				const highBits = readInt32LE(in_, inIdx);
+				inIdx += 4;
+				const ms = new Long(lowBits, highBits).toNumber();
+				const value = Buffer.from(new Date(ms).toISOString());
+				this.addQuotedVal(value);
+				break;
+			}
+			case BSON_DATA_BOOLEAN: {
+				const value = in_[inIdx++] === 1;
+				this.addVal(value ? TRUE : FALSE);
+				break;
+			}
+			case BSON_DATA_OBJECT: {
+				const objectSize = readInt32LE(in_, inIdx);
+				this.transcodeObject(in_, inIdx, false);
+				inIdx += objectSize;
+				break;
+			}
+			case BSON_DATA_ARRAY: {
+				const objectSize = readInt32LE(in_, inIdx);
+				this.transcodeObject(in_, inIdx, true);
+				inIdx += objectSize;
+				if (in_[inIdx - 1] !== 0)
+					throw new Error("Invalid array terminator byte");
+				break;
+			}
+			case BSON_DATA_NULL: {
+				this.addVal(NULL);
+				break;
+			}
+			case BSON_DATA_LONG: {
+				const lowBits = readInt32LE(in_, inIdx);
+				inIdx += 4;
+				const highBits = readInt32LE(in_, inIdx);
+				inIdx += 4;
+				let vx;
+				if (highBits === 0) {
+					vx = lowBits;
+				} else {
+					vx = new Long(lowBits, highBits);
 				}
-				case BSON_DATA_INT: {
-					const value = readInt32LE(buffer, index);
-					// JS impl of fast_itoa is slower than this.
-					this.addVal(out, Buffer.from(value.toString()));
-					index += 4;
-					break;
-				}
-				case BSON_DATA_NUMBER: {
-					// const value = buffer.readDoubleLE(index); // not sure which is faster TODO
-					const value = readDoubleLE(buffer, index);
-					if (Number.isFinite(value)) {
-						this.addVal(out, Buffer.from(value.toString()));
-					} else {
-						this.addVal(out, NULL);
-					}
-					index += 8;
-					break;
-				}
-				case BSON_DATA_DATE: {
-					const lowBits = readInt32LE(buffer, index);
-					index += 4;
-					const highBits = readInt32LE(buffer, index);
-					index += 4;
-					const ms = new Long(lowBits, highBits).toNumber();
-					const value = Buffer.from(new Date(ms).toISOString());
-					this.addQuotedVal(out, value);
-					break;
-				}
-				case BSON_DATA_BOOLEAN: {
-					if (buffer[index] !== 0 && buffer[index] !== 1)
-						throw new Error('illegal boolean type value');
-					const value = buffer[index++] === 1;
-					this.addVal(out, value ? TRUE : FALSE);
-					break;
-				}
-				case BSON_DATA_OBJECT: {
-					const objectSize = readInt32LE(buffer, index);
-					if (objectSize <= 0 || objectSize > bufLen - index)
-						throw new Error('bad embedded document length in bson');
-
-					this.transcodeObject(out, buffer, index, false);
-
-					index += objectSize;
-					break;
-				}
-				case BSON_DATA_ARRAY: {
-					const objectSize = readInt32LE(buffer, index);
-
-					this.transcodeObject(out, buffer, index, true);
-
-					index += objectSize;
-
-					if (buffer[index - 1] !== 0)
-						throw new Error('invalid array terminator byte');
-					break;
-				}
-				case BSON_DATA_NULL: {
-					this.addVal(out, NULL);
-					break;
-				}
-				case BSON_DATA_LONG: {
-					const lowBits = readInt32LE(buffer, index);
-					index += 4;
-					const highBits = readInt32LE(buffer, index);
-					index += 4;
-					let vx;
-					if (highBits === 0) {
-						vx = lowBits;
-					} else {
-						vx = new Long(lowBits, highBits);
-					}
-					const value = Buffer.from(vx.toString());
-					this.addVal(out, value);
-					break;
-				}
-				case BSON_DATA_UNDEFINED:
-					// noop
-					break;
-				case BSON_DATA_DECIMAL128:
-				case BSON_DATA_BINARY:
-				case BSON_DATA_REGEXP:
-				case BSON_DATA_SYMBOL:
-				case BSON_DATA_TIMESTAMP:
-				case BSON_DATA_MIN_KEY:
-				case BSON_DATA_MAX_KEY:
-				case BSON_DATA_CODE:
-				case BSON_DATA_CODE_W_SCOPE:
-				case BSON_DATA_DBPOINTER:
-					// incompatible JSON type
-					break;
-				default:
-					throw new Error('Detected unknown BSON type ' +
-						elementType.toString(16));
+				const value = Buffer.from(vx.toString());
+				this.addVal(value);
+				break;
+			}
+			case BSON_DATA_UNDEFINED:
+				// noop
+				break;
+			case BSON_DATA_DECIMAL128:
+			case BSON_DATA_BINARY:
+			case BSON_DATA_REGEXP:
+			case BSON_DATA_SYMBOL:
+			case BSON_DATA_TIMESTAMP:
+			case BSON_DATA_MIN_KEY:
+			case BSON_DATA_MAX_KEY:
+			case BSON_DATA_CODE:
+			case BSON_DATA_CODE_W_SCOPE:
+			case BSON_DATA_DBPOINTER:
+				throw new Error("BSON type incompatible with JSON");
+			default:
+				throw new Error("Unknown BSON type");
 			}
 
 			arrIdx++;
 		}
 
-		out[this.outIdx++] = isArray ? CLOSESQ : CLOSECURL;
+		this.ensureSpace(1);
+		this.out[this.outIdx++] = isArray ? CLOSESQ : CLOSECURL;
 	}
 }
 

@@ -7,13 +7,12 @@ full-precision (64-bit signed) BSON Longs to the JSON buffer. This is valid
 because JSON does not specify a maximum numeric precision, but js-bson instead
 writes an object with low and high bits.
 
-Still a work in progress. Current benchmark with a ~2500-element array of
-medium objects (9MB BSON):
+Benchmark with a ~2500-element array of medium objects (9MB BSON):
 
 | Method | Time (ms) |
 | ------ | --------: |
 | `JSON.stringify(BSON.deserialize(arr))`<sup>1</sup> | 226 |
-| this, JS | 27.4 |
+| this, JS | 39.7 |
 | this, portable C++ | 20.6 |
 | this, SSE2 | 15.2 |
 | this, SSE4.2 | 11.5 |
@@ -35,12 +34,13 @@ Major reasons it's fast:
 
 TODO:
 - [ ] Fix crash when using iterator interface.
-- [ ] The JS impl is incomplete (output bounds checking).
 - [ ] Try to reduce register spill
-- [ ] Try to squash the remaining v8 deoptimizations in the JS implementation?
 - [ ] Refactor so it's usable as a C++ library?
 
 ## Benchmarks by BSON type (ops/sec):
+
+(Although the JS impl is slower than js-bson in this benchmark, that's not the
+case in a real-world (corpus) benchmark.)
 
 | Type | js-bson | this, JS | this, CPP (AVX2) |
 | ---- | ---: | ---: | ---: |
@@ -78,7 +78,7 @@ between arrays and objects at the top level, so this must be provided.
   however.
 * Con: Entire output must fit in memory.
 
-### Iterator (Streaming) (C++ only)
+### Iterator (Streaming) (C++ only) (Currently crashes)
 
 > ```ts
 > new Transcoder(bson: Uint8Array, isArray?: boolean = true,

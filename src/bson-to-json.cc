@@ -729,7 +729,9 @@ private:
 			}
 
 			// Write name
-			if (!isArray) {
+			if (isArray) {
+				inIdx += nDigits(arrIdx);
+			} else {
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
 				writeEscapedChars<mode>(Enabler<isa>{});
@@ -737,8 +739,6 @@ private:
 				ENSURE_SPACE_OR_RETURN(2);
 				memcpy(out + outIdx, "\":", 2);
 				outIdx += 2;
-			} else {
-				inIdx += nDigits(arrIdx);
 			}
 
 			switch (elementType) {
@@ -900,7 +900,6 @@ private:
 			case BSON_DATA_CODE:
 			case BSON_DATA_CODE_W_SCOPE:
 			case BSON_DATA_DBPOINTER:
-				// incompatible JSON type
 				err = "BSON type incompatible with JSON";
 				return true;
 			default:
