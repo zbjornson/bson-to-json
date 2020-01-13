@@ -9,6 +9,7 @@
 #include "napi.h"
 #include "../deps/double_conversion/double-to-string.h"
 #include "cpu-detection.h"
+#include "fast_itoa.h"
 
 #ifdef _MSC_VER
 # include <intrin.h>
@@ -46,54 +47,6 @@ constexpr uint8_t BSON_DATA_LONG = 18;
 constexpr uint8_t BSON_DATA_DECIMAL128 = 19;
 constexpr uint8_t BSON_DATA_MIN_KEY = 0xff;
 constexpr uint8_t BSON_DATA_MAX_KEY = 0x7f;
-
-// Adaptetd from https://github.com/fmtlib/fmt/blob/master/include/fmt/format.h#L2818,
-// MIT license
-constexpr const char digits[] =
-	"0001020304050607080910111213141516171819"
-	"2021222324252627282930313233343536373839"
-	"4041424344454647484950515253545556575859"
-	"6061626364656667686970717273747576777879"
-	"8081828384858687888990919293949596979899";
-
-template<typename T> constexpr size_t INT_BUF_DIGS = 0;
-template<> constexpr size_t INT_BUF_DIGS<int32_t> = 11;
-template<> constexpr size_t INT_BUF_DIGS<int64_t> = 20;
-
-template<typename T>
-size_t fast_itoa(uint8_t* &p, T val) {
-	p += INT_BUF_DIGS<T>;
-	size_t n = 0;
-
-	const bool isNegative = val < 0;
-	if (isNegative)
-		val = 0 - val;
-
-	while (val >= 100) {
-		size_t index = static_cast<size_t>((val % 100) * 2);
-		val /= 100;
-		*--p = digits[index + 1];
-		*--p = digits[index];
-		n += 2;
-	}
-
-	if (val < 10) {
-		*--p = static_cast<uint8_t>('0' + val);
-		n++;
-	} else {
-		size_t index = static_cast<size_t>(val * 2);
-		*--p = digits[index + 1];
-		*--p = digits[index];
-		n += 2;
-	}
-
-	if (isNegative) {
-		*--p = '-';
-		n++;
-	}
-
-	return n;
-}
 
 // Returns the char to use to escape c if it requires escaping, else returns 0.
 inline static uint8_t getEscape(uint8_t c) {
