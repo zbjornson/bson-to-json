@@ -60,7 +60,6 @@ template<typename T> constexpr size_t INT_BUF_DIGS = 0;
 template<> constexpr size_t INT_BUF_DIGS<int32_t> = 11;
 template<> constexpr size_t INT_BUF_DIGS<int64_t> = 20;
 
-// TODO dates can specialize on being 2 digits for mm, dd, hh, mm, ss
 template<typename T>
 size_t fast_itoa(uint8_t* &p, T val) {
 	p += INT_BUF_DIGS<T>;
@@ -797,63 +796,51 @@ private:
 				break;
 			}
 			case BSON_DATA_DATE: {
-				if (inIdx + 8 > inLen)
+				if (inIdx + 8 <= inLen) {
+					ENSURE_SPACE_OR_RETURN(26);
+					const int64_t value = readLE<int64_t>(); // BSON encodes UTC ms since Unix epoch
+					const time_t seconds = value / 1000;
+					const int32_t millis = value % 1000;
+
+					out[outIdx++] = '"';
+					tm* gmt = gmtime(&seconds);
+
+					uint8_t temp[INT_BUF_DIGS<int32_t>];
+					uint8_t* temp_p = temp;
+					size_t n;
+
+					n = fast_itoa(temp_p, gmt->tm_year + 1900);
+					memcpy(out + outIdx, temp_p, n);
+					outIdx += n;
+					temp_p = temp;
+
+					out[outIdx++] = '-';
+					memcpy(out + outIdx, digits + ((gmt->tm_mon + 1) * 2), 2);
+					outIdx += 2;
+
+					out[outIdx++] = '-';
+					memcpy(out + outIdx, digits + (gmt->tm_mday) * 2, 2);
+					outIdx += 2;
+
+					out[outIdx++] = 'T';
+					memcpy(out + outIdx, digits + (gmt->tm_hour) * 2, 2);
+					outIdx += 2;
+
+					out[outIdx++] = ':';
+					memcpy(out + outIdx, digits + (gmt->tm_min) * 2, 2);
+					outIdx += 2;
+
+					out[outIdx++] = ':';
+					memcpy(out + outIdx, digits + (gmt->tm_sec) * 2, 2);
+					outIdx += 2;
+
+					memcpy(out + outIdx, ".000Z\"", 6);
+					n = fast_itoa(temp_p, millis);
+					outIdx += 4 - n;
+					memcpy(out + outIdx, temp_p, n);
+					outIdx += n + 2;
+				} else
 					RETURN_ERR("Truncated BSON (in Date)");
-
-				ENSURE_SPACE_OR_RETURN(26);
-				const int64_t value = readLE<int64_t>(); // BSON encodes UTC ms since Unix epoch
-				const time_t seconds = value / 1000;
-				const int32_t millis = value % 1000;
-
-				uint8_t temp[INT_BUF_DIGS<int32_t>];
-				uint8_t* temp_p = temp;
-				size_t n;
-				out[outIdx++] = '"';
-				tm* gmt = gmtime(&seconds);
-
-				n = fast_itoa(temp_p, gmt->tm_year + 1900);
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n;
-				temp_p = temp;
-
-				memcpy(out + outIdx, "-0", 2);
-				n = fast_itoa(temp_p, gmt->tm_mon + 1);
-				outIdx += n == 1 ? 2 : 1;
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n;
-				temp_p = temp;
-
-				memcpy(out + outIdx, "-0", 2);
-				n = fast_itoa(temp_p, gmt->tm_mday);
-				outIdx += n == 1 ? 2 : 1;
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n;
-				temp_p = temp;
-
-				memcpy(out + outIdx, "T0", 2);
-				n = fast_itoa(temp_p, gmt->tm_hour);
-				outIdx += n == 1 ? 2 : 1;
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n;
-				temp_p = temp;
-
-				out[outIdx++] = ':';
-				n = fast_itoa(temp_p, gmt->tm_min);
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n;
-				temp_p = temp;
-
-				out[outIdx++] = ':';
-				n = fast_itoa(temp_p, gmt->tm_sec);
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n;
-				temp_p = temp;
-
-				memcpy(out + outIdx, ".000Z\"", 6);
-				n = fast_itoa(temp_p, millis);
-				outIdx += 4 - n;
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n + 2;
 				break;
 			}
 			case BSON_DATA_BOOLEAN: {

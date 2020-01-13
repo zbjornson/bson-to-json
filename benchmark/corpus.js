@@ -21,5 +21,5 @@ function addAndRun(name, buf) {
 	suite.run();
 }
 
-const buf = require("fs").readFileSync("./data.bson");
+const buf = require("fs").readFileSync(__dirname + "/data.bson");
 addAndRun("data.bson", buf);
