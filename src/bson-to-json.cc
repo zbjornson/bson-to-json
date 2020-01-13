@@ -97,6 +97,30 @@ template<> struct Enabler<0> {};
 #define ENSURE_SPACE_OR_RETURN(n) if (ensureSpace<mode>(n)) return true
 #define RETURN_ERR(msg) return err = (msg), true
 
+#ifdef _MSC_VER
+# define NOINLINE(fn) __declspec(noinline) fn
+#else
+# define NOINLINE(fn) fn __attribute__((noinline))
+#endif
+
+inline static __m128i _mm_set1_epu8(uint8_t v) {
+	union {
+		uint8_t u;
+		int8_t i;
+	} val;
+	val.u = v;
+	return _mm_set1_epi8(val.i);
+}
+
+inline static __m256i _mm256_set1_epu8(uint8_t v) {
+	union {
+		uint8_t u;
+		int8_t i;
+	} val;
+	val.u = v;
+	return _mm256_set1_epi8(val.i);
+}
+
 class Transcoder {
 public:
 	enum Mode {
@@ -282,7 +306,7 @@ private:
 		// TODO compare against a right-aligned load + shuffle when possible.
 		// TODO compare against AVX512VL+BW _mm_mask_loadu_epi8.
 		uint8_t x[16];
-		for (int i = 0; i < n; i++) x[i] = in[inIdx + i];
+		for (size_t i = 0; i < n; i++) x[i] = in[inIdx + i];
 		return _mm_loadu_si128(reinterpret_cast<__m128i*>(x));
 	}
 
@@ -384,16 +408,16 @@ private:
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
 		// xor 0x80 to get unsigned comparison. https://stackoverflow.com/q/32945410/1218408
-		__m128i esch20 = _mm_set1_epi8(0x20 ^ 0x80);
-		__m128i esch22 = _mm_set1_epi8(0x22);
-		__m128i esch5c = _mm_set1_epi8(0x5c);
+		__m128i esch20 = _mm_set1_epu8(0x20 ^ 0x80);
+		__m128i esch22 = _mm_set1_epu8(0x22);
+		__m128i esch5c = _mm_set1_epu8(0x5c);
 
 		while (inIdx < end) {
 			const size_t clampedN = n > 16 ? 16 : n;
 			__m128i chars = load_partial_128i(clampedN);
 
 			// see above (unsigned comparison)
-			__m128i iseq = _mm_cmpgt_epi8(esch20, _mm_xor_si128(chars, _mm_set1_epi8(0x80)));
+			__m128i iseq = _mm_cmpgt_epi8(esch20, _mm_xor_si128(chars, _mm_set1_epu8(0x80)));
 			iseq = _mm_or_si128(iseq, _mm_cmpeq_epi8(chars, esch22));
 			iseq = _mm_or_si128(iseq, _mm_cmpeq_epi8(chars, esch5c));
 
@@ -473,16 +497,16 @@ private:
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
 		// xor 0x80 to get unsigned comparison. https://stackoverflow.com/q/32945410/1218408
-		__m256i esch20 = _mm256_set1_epi8(0x20 ^ 0x80);
-		__m256i esch22 = _mm256_set1_epi8(0x22);
-		__m256i esch5c = _mm256_set1_epi8(0x5c);
+		__m256i esch20 = _mm256_set1_epu8(0x20 ^ 0x80);
+		__m256i esch22 = _mm256_set1_epu8(0x22);
+		__m256i esch5c = _mm256_set1_epu8(0x5c);
 
 		while (inIdx < end) {
 			const size_t clampedN = n > 32 ? 32 : n;
 			__m256i chars = load_partial_256i(clampedN);
 
 			// see above (unsigned comparison)
-			__m256i iseq = _mm256_cmpgt_epi8(esch20, _mm256_xor_si256(chars, _mm256_set1_epi8(0x80)));
+			__m256i iseq = _mm256_cmpgt_epi8(esch20, _mm256_xor_si256(chars, _mm256_set1_epu8(0x80)));
 			iseq = _mm256_or_si256(iseq, _mm256_cmpeq_epi8(chars, esch22));
 			iseq = _mm256_or_si256(iseq, _mm256_cmpeq_epi8(chars, esch5c));
 
@@ -543,7 +567,12 @@ private:
 	template<Mode mode>
 	bool writeEscapedChars(Enabler<ISA::SSE42>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
-		const __m128i escapes = _mm_set_epi8(0,0, 0,0, 0,0, 0,0, 0,0, 0xff,0x5d, 0x5b,0x23, 0x21,0x20);
+		union {
+			uint8_t u;
+			int8_t i;
+		} val;
+		val.u = 0xff;
+		const __m128i escapes = _mm_set_epi8(0,0, 0,0, 0,0, 0,0, 0,0, val.i,0x5d, 0x5b,0x23, 0x21,0x20);
 
 		while (inIdx < inLen) {
 			__m128i chars = _mm_loadu_si128(reinterpret_cast<__m128i const*>(&in[inIdx])); // TODO this can overrun
@@ -579,14 +608,14 @@ private:
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
 		// xor 0x80 to get unsigned comparison. https://stackoverflow.com/q/32945410/1218408
-		__m256i esch20 = _mm256_set1_epi8(0x20 ^ 0x80);
-		__m256i esch22 = _mm256_set1_epi8(0x22);
-		__m256i esch5c = _mm256_set1_epi8(0x5c);
+		__m256i esch20 = _mm256_set1_epu8(0x20 ^ 0x80);
+		__m256i esch22 = _mm256_set1_epu8(0x22);
+		__m256i esch5c = _mm256_set1_epu8(0x5c);
 
 		while (inIdx < inLen) {
 			__m256i chars = load_partial_256i(32);
 
-			__m256i iseq = _mm256_cmpgt_epi8(esch20, _mm256_xor_si256(chars, _mm256_set1_epi8(0x80)));
+			__m256i iseq = _mm256_cmpgt_epi8(esch20, _mm256_xor_si256(chars, _mm256_set1_epu8(0x80)));
 			iseq = _mm256_or_si256(iseq, _mm256_cmpeq_epi8(chars, esch22));
 			iseq = _mm256_or_si256(iseq, _mm256_cmpeq_epi8(chars, esch5c));
 
@@ -697,7 +726,7 @@ private:
 			switch (elementType) {
 			case BSON_DATA_STRING: {
 				const int32_t size = readLE<int32_t>();
-				if (size <= 0 || size > inLen - inIdx)
+				if (size <= 0 || static_cast<size_t>(size) > inLen - inIdx)
 					RETURN_ERR("Bad string length");
 
 				ENSURE_SPACE_OR_RETURN(1);
@@ -882,8 +911,9 @@ public:
 
 	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
 		Napi::HandleScope scope(env);
-		Napi::Function func = DefineClass(env, "BJTrans", {
-			InstanceMethod(Napi::Symbol::WellKnown(env, "iterator"), &BJTrans::Iterator)
+		// gcc 7 seems to need the explicit Napi::ObjectWrap<BJTrans<isa> >::
+		Napi::Function func = Napi::ObjectWrap<BJTrans<isa> >::DefineClass(env, "BJTrans", {
+			Napi::ObjectWrap<BJTrans<isa> >::InstanceMethod(Napi::Symbol::WellKnown(env, "iterator"), &BJTrans::Iterator)
 			});
 		
 		constructor = Napi::Persistent(func);
@@ -936,7 +966,7 @@ private:
 	size_t chunkSize = 0;
 	bool final = false;
 
-	Napi::Value BJTrans::Iterator(const Napi::CallbackInfo& info) {
+	Napi::Value Iterator(const Napi::CallbackInfo& info) {
 		Napi::Env env = info.Env();
 
 		Napi::Object iter = Napi::Object::New(env);
@@ -998,7 +1028,7 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
 	Napi::Function fn;
-	char* isa;
+	char const* isa;
 	if (supports<ISA::AVX2>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::AVX2>);
 		BJTrans<ISA::AVX2>::Init(env, exports);

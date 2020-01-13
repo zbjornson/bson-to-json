@@ -19,7 +19,7 @@ const benchmarks = require("beautify-benchmark");
 
 const bson = require("bson");
 const JS = require("../src/bson-to-json.js");
-const CPP = require("../build/release/bsonToJson.node");
+const CPP = require("../build/Release/bsonToJson.node");
 
 const types = process.argv.map(s => s.toLowerCase());
 

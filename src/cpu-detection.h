@@ -16,8 +16,8 @@ enum ISA {
 	BMI2
 };
 
-template<ISA isa> static bool supports() { return false; }
-template<> static bool supports<ISA::BASELINE>() { return true; }
+template<ISA isa> bool supports() { return false; }
+template<> bool supports<ISA::BASELINE>() { return true; }
 
 #if defined(__x86_64__) || defined(_M_X64)
 
@@ -25,12 +25,12 @@ template<> static bool supports<ISA::BASELINE>() { return true; }
 # include <intrin.h>
 #endif
 
-constexpr static std::uint8_t EAX = 0;
-constexpr static std::uint8_t EBX = 1;
-constexpr static std::uint8_t ECX = 2;
-constexpr static std::uint8_t EDX = 3;
+constexpr std::uint8_t EAX = 0;
+constexpr std::uint8_t EBX = 1;
+constexpr std::uint8_t ECX = 2;
+constexpr std::uint8_t EDX = 3;
 
-static bool cpuid(std::uint8_t outreg, std::uint8_t bit, std::uint32_t initEax,
+bool cpuid(std::uint8_t outreg, std::uint8_t bit, std::uint32_t initEax,
 		std::uint32_t initEcx = 0) {
 	std::uint32_t regs[4];
 #ifdef _MSC_VER
@@ -43,15 +43,15 @@ static bool cpuid(std::uint8_t outreg, std::uint8_t bit, std::uint32_t initEax,
 	return regs[outreg] & (1 << bit);
 }
 
-template<> static bool supports<ISA::SSE2>() { return cpuid(EDX, 26, 1); }
-template<> static bool supports<ISA::SSE3>() { return cpuid(ECX, 0, 1); }
-template<> static bool supports<ISA::SSSE3>() { return cpuid(ECX, 9, 1); }
-template<> static bool supports<ISA::SSE42>() { return cpuid(ECX, 20, 1); }
-template<> static bool supports<ISA::AVX>() { return cpuid(ECX, 28, 1); }
-template<> static bool supports<ISA::AVX2>() { return cpuid(EBX, 5, 7); }
-template<> static bool supports<ISA::AVX512F>() { return cpuid(EBX, 16, 7); }
-template<> static bool supports<ISA::AVX512VL>() { return cpuid(EBX, 31, 7); }
-template<> static bool supports<ISA::BMI1>() { return cpuid(EBX, 3, 7); }
-template<> static bool supports<ISA::BMI2>() { return cpuid(EBX, 8, 7); }
+template<> bool supports<ISA::SSE2>() { return cpuid(EDX, 26, 1); }
+template<> bool supports<ISA::SSE3>() { return cpuid(ECX, 0, 1); }
+template<> bool supports<ISA::SSSE3>() { return cpuid(ECX, 9, 1); }
+template<> bool supports<ISA::SSE42>() { return cpuid(ECX, 20, 1); }
+template<> bool supports<ISA::AVX>() { return cpuid(ECX, 28, 1); }
+template<> bool supports<ISA::AVX2>() { return cpuid(EBX, 5, 7); }
+template<> bool supports<ISA::AVX512F>() { return cpuid(EBX, 16, 7); }
+template<> bool supports<ISA::AVX512VL>() { return cpuid(EBX, 31, 7); }
+template<> bool supports<ISA::BMI1>() { return cpuid(EBX, 3, 7); }
+template<> bool supports<ISA::BMI2>() { return cpuid(EBX, 8, 7); }
 
 #endif // x86_64
