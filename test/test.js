@@ -82,5 +82,73 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 			// as replacement characters.
 			assert.equal(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
 		});
+
+		it("handles invalid short input", function () {
+			assert.throws(() => bsonToJson(Buffer.allocUnsafeSlow(2)),
+				new Error("Input buffer must have length >= 5"));
+		});
+
+		it("handles invalid string lengths", function () {
+			const inv = Buffer.from([
+				12, 0, 0, 0, // 12 B document
+				2, // string
+				"0".charCodeAt(0), 0, // key
+				24, 0, 0, 0,
+				0 // fewer than 24 B
+			]);
+
+			assert.throws(() => bsonToJson(inv, true),
+				new Error("Bad string length"));
+		});
+
+		it("handles buffers too short for ObjectId", function () {
+			const inv = Buffer.from([
+				12, 0, 0, 0, // 12 B document
+				7, // ObjectId
+				"0".charCodeAt(0), 0, // key
+				0, 0, 0, 0,
+				0 // fewer than 12 B
+			]);
+
+			assert.throws(() => bsonToJson(inv, true),
+				new Error("Truncated BSON (in ObjectId)"));
+		});
+		
+		it("handles invalid short embedded documents", function () {
+			const inv = Buffer.from([
+				12, 0, 0, 0, // x B document
+				3, // object
+				"0".charCodeAt(0), 0, // key
+				12, 0, 0, 0, // 12 B subdoc
+				0 // fewer than 12 B
+			]);
+
+			assert.throws(() => bsonToJson(inv, true),
+				new Error("BSON size exceeds input length"));
+		});
+
+		it("handles invalid short ints", function () {
+			const inv = Buffer.from([
+				9, 0, 0, 0, // x B document
+				16, // int
+				"0".charCodeAt(0), 0, // key
+				5, 0
+			]);
+
+			assert.throws(() => bsonToJson(inv, true),
+				new Error("Truncated BSON (in Int)"));
+		});
+
+		it("handles invalid short longs", function () {
+			const inv = Buffer.from([
+				9, 0, 0, 0, // x B document
+				18, // long
+				"0".charCodeAt(0), 0, // key
+				5, 0
+			]);
+
+			assert.throws(() => bsonToJson(inv, true),
+				new Error("Truncated BSON (in Long)"));
+		});
 	});
 }

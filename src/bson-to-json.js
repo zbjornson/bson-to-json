@@ -104,6 +104,8 @@ class Transcoder {
 	 * @public
 	 */
 	transcode(input, isArray = true) {
+		if (input.length < 5)
+			throw new Error("Input buffer must have length >= 5");
 		// Estimate outLen at 2.5x inLen. (See C++ for explanation.)
 		// TODO is it noticeable if this is the next multiple of 4096?
 		this.out = Buffer.alloc((input.length * 10) >> 2);
@@ -225,12 +227,13 @@ class Transcoder {
 	transcodeObject(in_, inIdx, isArray) {
 		const inLen = in_.length;
 		const size = readInt32LE(in_, inIdx);
-		inIdx += 4;
 
 		if (size < 5)
-			throw new Error("BSON size must be >=5");
-		if (size > inLen) // TODO + inIdx?
-			throw new Error("BSON size exceeds input length.")
+			throw new Error("BSON size must be >= 5");
+		if (size + inIdx > inLen)
+			throw new Error("BSON size exceeds input length");
+
+		inIdx += 4;
 
 		let arrIdx = 0;
 
@@ -258,7 +261,7 @@ class Transcoder {
 					nameEnd++;
 	
 				if (nameEnd >= inLen)
-					throw new Error('Bad BSON Document: illegal CString');
+					throw new Error("Bad BSON Document: illegal CString");
 
 				this.ensureSpace(1);
 				this.out[this.outIdx++] = QUOTE;
@@ -285,11 +288,15 @@ class Transcoder {
 				break;
 			}
 			case BSON_DATA_OID: {
+				if (inIdx + 12 > inLen)
+					throw new Error("Truncated BSON (in ObjectId)");
 				this.writeObjectId(in_, inIdx);
 				inIdx += 12;
 				break;
 			}
 			case BSON_DATA_INT: {
+				if (4 + inIdx > inLen)
+					throw new Error("Truncated BSON (in Int)");
 				const value = readInt32LE(in_, inIdx);
 				inIdx += 4;
 				// JS impl of fast_itoa is slower than this.
@@ -297,6 +304,8 @@ class Transcoder {
 				break;
 			}
 			case BSON_DATA_NUMBER: {
+				if (8 + inIdx > inLen)
+					throw new Error("Truncated BSON (in Int)");
 				// const value = in_.readDoubleLE(inIdx); // not sure which is faster TODO
 				const value = readDoubleLE(in_, inIdx);
 				inIdx += 8;
@@ -308,6 +317,8 @@ class Transcoder {
 				break;
 			}
 			case BSON_DATA_DATE: {
+				if (8 + inIdx > inLen)
+					throw new Error("Truncated BSON (in Date)");
 				const lowBits = readInt32LE(in_, inIdx);
 				inIdx += 4;
 				const highBits = readInt32LE(in_, inIdx);
@@ -318,6 +329,8 @@ class Transcoder {
 				break;
 			}
 			case BSON_DATA_BOOLEAN: {
+				if (1 + inIdx > inLen)
+					throw new Error("Truncated BSON (in Boolean)");
 				const value = in_[inIdx++] === 1;
 				this.addVal(value ? TRUE : FALSE);
 				break;
@@ -341,6 +354,8 @@ class Transcoder {
 				break;
 			}
 			case BSON_DATA_LONG: {
+				if (8 + inIdx > inLen)
+					throw new Error("Truncated BSON (in Long)");
 				const lowBits = readInt32LE(in_, inIdx);
 				inIdx += 4;
 				const highBits = readInt32LE(in_, inIdx);
@@ -370,7 +385,7 @@ class Transcoder {
 			case BSON_DATA_DBPOINTER:
 				throw new Error("BSON type incompatible with JSON");
 			default:
-				throw new Error("Unknown BSON type");
+				throw new Error("Unknown BSON type " + elementType);
 			}
 
 			arrIdx++;

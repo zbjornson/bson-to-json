@@ -143,6 +143,7 @@ template<int isa> struct Enabler : Enabler<isa - 1> {};
 template<> struct Enabler<0> {};
 
 #define ENSURE_SPACE_OR_RETURN(n) if (ensureSpace<mode>(n)) return true
+#define RETURN_ERR(msg) return err = (msg), true
 
 class Transcoder {
 public:
@@ -176,6 +177,9 @@ public:
 	template <ISA isa, Mode mode>
 	bool transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
 			size_t chunkSize = 0, uint8_t* fixedOut = nullptr) {
+
+		if (inLen_ < 5)
+			RETURN_ERR("Input buffer must have length >= 5");
 
 		in = in_;
 		inLen = inLen_;
@@ -705,14 +709,11 @@ private:
 	template<ISA isa, Mode mode>
 	bool transcodeObject(bool isArray) {
 		const int32_t size = readLE<int32_t>();
-		if (size < 5) {
-			err = "BSON size must be >=5";
-			return true;
-		}
-		if (size > inLen) {// + inIdx?
-			err = "BSON size exceeds input length.";
-			return true;
-		}
+		if (size < 5)
+			RETURN_ERR("BSON size must be >= 5");
+
+		if (size + inIdx - 4 > inLen)
+			RETURN_ERR("BSON size exceeds input length");
 
 		int32_t arrIdx = 0;
 
@@ -744,10 +745,9 @@ private:
 			switch (elementType) {
 			case BSON_DATA_STRING: {
 				const int32_t size = readLE<int32_t>();
-				if (size <= 0 || size > inLen - inIdx) {
-					err = "Bad string length";
-					return true;
-				}
+				if (size <= 0 || size > inLen - inIdx)
+					RETURN_ERR("Bad string length");
+
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
 				writeEscapedChars<mode>(size - 1, Enabler<isa>{});
@@ -757,37 +757,49 @@ private:
 				break;
 			}
 			case BSON_DATA_OID: {
-				ENSURE_SPACE_OR_RETURN(26);
-				transcodeObjectId(Enabler<isa>{});
+				if (inIdx + 12 <= inLen) {
+					ENSURE_SPACE_OR_RETURN(26);
+					transcodeObjectId(Enabler<isa>{});
+				} else
+					RETURN_ERR("Truncated BSON (in ObjectId)");
 				break;
 			}
 			case BSON_DATA_INT: {
-				const int32_t value = readLE<int32_t>();
-				uint8_t temp[INT_BUF_DIGS<int32_t>];
-				uint8_t* temp_p = temp;
-				size_t n = fast_itoa(temp_p, value);
-				ENSURE_SPACE_OR_RETURN(n);
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n;
+				if (inIdx + 4 <= inLen) {
+					const int32_t value = readLE<int32_t>();
+					uint8_t temp[INT_BUF_DIGS<int32_t>];
+					uint8_t* temp_p = temp;
+					size_t n = fast_itoa(temp_p, value);
+					ENSURE_SPACE_OR_RETURN(n);
+					memcpy(out + outIdx, temp_p, n);
+					outIdx += n;
+				} else
+					RETURN_ERR("Truncated BSON (in Int)");
 				break;
 			}
 			case BSON_DATA_NUMBER: {
-				const double value = readLE<double>();
-				if (std::isfinite(value)) {
-					constexpr size_t kBufferSize = 128;
-					ENSURE_SPACE_OR_RETURN(kBufferSize);
-					StringBuilder sb(reinterpret_cast<char*>(out + outIdx), kBufferSize);
-					auto& dc = DoubleToStringConverter::EcmaScriptConverter();
-					dc.ToShortest(value, &sb);
-					outIdx += sb.position();
-				} else {
-					ENSURE_SPACE_OR_RETURN(4);
-					memcpy(out + outIdx, "null", 4);
-					outIdx += 4;
-				}
+				if (inIdx + 8 <= inLen) {
+					const double value = readLE<double>();
+					if (std::isfinite(value)) {
+						constexpr size_t kBufferSize = 128;
+						ENSURE_SPACE_OR_RETURN(kBufferSize);
+						StringBuilder sb(reinterpret_cast<char*>(out + outIdx), kBufferSize);
+						auto& dc = DoubleToStringConverter::EcmaScriptConverter();
+						dc.ToShortest(value, &sb);
+						outIdx += sb.position();
+					} else {
+						ENSURE_SPACE_OR_RETURN(4);
+						memcpy(out + outIdx, "null", 4);
+						outIdx += 4;
+					}
+				} else
+					RETURN_ERR("Truncated BSON (in Number)");
 				break;
 			}
 			case BSON_DATA_DATE: {
+				if (inIdx + 8 > inLen)
+					RETURN_ERR("Truncated BSON (in Date)");
+
 				ENSURE_SPACE_OR_RETURN(26);
 				const int64_t value = readLE<int64_t>(); // BSON encodes UTC ms since Unix epoch
 				const time_t seconds = value / 1000;
@@ -845,24 +857,29 @@ private:
 				break;
 			}
 			case BSON_DATA_BOOLEAN: {
-				const uint8_t val = in[inIdx++];
-				if (val == 1) {
-					ENSURE_SPACE_OR_RETURN(4);
-					memcpy(out + outIdx, "true", 4);
-					outIdx += 4;
-				} else {
-					ENSURE_SPACE_OR_RETURN(5);
-					memcpy(out + outIdx, "false", 5);
-					outIdx += 5;
-				}
+				if (inIdx + 1 <= inLen) {
+					const uint8_t val = in[inIdx++];
+					if (val == 1) {
+						ENSURE_SPACE_OR_RETURN(4);
+						memcpy(out + outIdx, "true", 4);
+						outIdx += 4;
+					} else {
+						ENSURE_SPACE_OR_RETURN(5);
+						memcpy(out + outIdx, "false", 5);
+						outIdx += 5;
+					}
+				} else
+					RETURN_ERR("Truncated BSON (in Boolean)");
 				break;
 			}
 			case BSON_DATA_OBJECT: {
+				// Bounds check in head of this function.
 				if (transcodeObject<isa, mode>(false))
 					return true;
 				break;
 			}
 			case BSON_DATA_ARRAY: {
+				// Bounds check in head of this function.
 				if (transcodeObject<isa, mode>(true))
 					return true;
 				if (in[inIdx - 1] != 0) {
@@ -878,13 +895,16 @@ private:
 				break;
 			}
 			case BSON_DATA_LONG: {
-				const int64_t value = readLE<int64_t>();
-				uint8_t temp[INT_BUF_DIGS<int64_t>];
-				uint8_t* temp_p = temp;
-				size_t n = fast_itoa(temp_p, value);
-				ENSURE_SPACE_OR_RETURN(n);
-				memcpy(out + outIdx, temp_p, n);
-				outIdx += n;
+				if (inIdx + 8 <= inLen) {
+					const int64_t value = readLE<int64_t>();
+					uint8_t temp[INT_BUF_DIGS<int64_t>];
+					uint8_t* temp_p = temp;
+					size_t n = fast_itoa(temp_p, value);
+					ENSURE_SPACE_OR_RETURN(n);
+					memcpy(out + outIdx, temp_p, n);
+					outIdx += n;
+				} else
+					RETURN_ERR("Truncated BSON (in Long)");
 				break;
 			}
 			case BSON_DATA_UNDEFINED:
@@ -900,11 +920,9 @@ private:
 			case BSON_DATA_CODE:
 			case BSON_DATA_CODE_W_SCOPE:
 			case BSON_DATA_DBPOINTER:
-				err = "BSON type incompatible with JSON";
-				return true;
+				RETURN_ERR("BSON type incompatible with JSON");
 			default:
-				err = "Unknown BSON type";
-				return true;
+				RETURN_ERR("Unknown BSON type");
 			}
 
 			arrIdx++;
