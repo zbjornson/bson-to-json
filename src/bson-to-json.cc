@@ -276,38 +276,6 @@ private:
 		return false;
 	}
 
-	// Writes the `\ u 0 0 ch cl` sequence
-	inline void writeControlChar(uint8_t c) {
-		memcpy(out + outIdx, "\\u00", 4);
-		outIdx += 4;
-		out[outIdx++] = (c & 0xf0) ? '1' : '0';
-		out[outIdx++] = hexNib(c & 0xf);
-	}
-
-	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
-	template<Mode mode>
-	bool writeEscapedChars(size_t n, Enabler<ISA::BASELINE>) {
-		const size_t end = inIdx + n;
-		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
-		// true (worst-case expansion is 6x).
-		ENSURE_SPACE_OR_RETURN(n);
-		while (inIdx < end) {
-			uint8_t xc;
-			const uint8_t c = in[inIdx++];
-			if (LIKELY(c >= 0x20 && c != 0x22 && c != 0x5c)) {
-				out[outIdx++] = c;
-			} else if ((xc = getEscape(c))) { // single char escape
-				ENSURE_SPACE_OR_RETURN(end - inIdx + 1);
-				out[outIdx++] = '\\';
-				out[outIdx++] = xc;
-			} else { // c < 0x20, control
-				ENSURE_SPACE_OR_RETURN(end - inIdx + 5);
-				writeControlChar(c);
-			}
-		}
-		return false;
-	}
-
 	// The load/store methods must be small and inlinable in the fast case (not
 	// at end of in or out, which is almost always). The slow case should be
 	// reached with a `call` and there's not much point to optimize it.
@@ -408,6 +376,38 @@ private:
 			return _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), v);
 		}
 		store_partial_256i_slow(v, n);
+	}
+
+	// Writes the `\ u 0 0 ch cl` sequence
+	inline void writeControlChar(uint8_t c) {
+		memcpy(out + outIdx, "\\u00", 4);
+		outIdx += 4;
+		out[outIdx++] = (c & 0xf0) ? '1' : '0';
+		out[outIdx++] = hexNib(c & 0xf);
+	}
+
+	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
+	template<Mode mode>
+	bool writeEscapedChars(size_t n, Enabler<ISA::BASELINE>) {
+		const size_t end = inIdx + n;
+		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
+		// true (worst-case expansion is 6x).
+		ENSURE_SPACE_OR_RETURN(n);
+		while (inIdx < end) {
+			uint8_t xc;
+			const uint8_t c = in[inIdx++];
+			if (LIKELY(c >= 0x20 && c != 0x22 && c != 0x5c)) {
+				out[outIdx++] = c;
+			} else if ((xc = getEscape(c))) { // single char escape
+				ENSURE_SPACE_OR_RETURN(end - inIdx + 1);
+				out[outIdx++] = '\\';
+				out[outIdx++] = xc;
+			} else { // c < 0x20, control
+				ENSURE_SPACE_OR_RETURN(end - inIdx + 5);
+				writeControlChar(c);
+			}
+		}
+		return false;
 	}
 
 	template<Mode mode>
