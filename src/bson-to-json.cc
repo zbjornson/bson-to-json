@@ -26,6 +26,21 @@ using std::uint32_t;
 using std::int64_t;
 using std::memcpy;
 
+#ifdef _MSC_VER
+# define NOINLINE(fn) __declspec(noinline) fn
+// MSVC does not support anything like likely/unlikely, so if/else statements
+// need to be ordered by probability. They are planning to add [[likely]] and
+// [[unlikely]] though.
+// Maybe define these as `LIKELY(expr) (expr) [[likely]]` so upgrading is easier
+# define LIKELY(expr) (expr)
+# define UNLIKELY(expr) (expr)
+#else
+# define NOINLINE(fn) fn __attribute__((noinline))
+// Only GCC10 supports C++20 [[likely]] and [[unlikely]]
+# define LIKELY(expr) __builtin_expect((expr), 1)
+# define UNLIKELY(expr) __builtin_expect((expr), 0)
+#endif
+
 constexpr uint8_t BSON_DATA_NUMBER = 1;
 constexpr uint8_t BSON_DATA_STRING = 2;
 constexpr uint8_t BSON_DATA_OBJECT = 3;
@@ -94,14 +109,8 @@ inline static constexpr size_t nDigits(int32_t v) {
 template<int isa> struct Enabler : Enabler<isa - 1> {};
 template<> struct Enabler<0> {};
 
-#define ENSURE_SPACE_OR_RETURN(n) if (ensureSpace<mode>(n)) return true
+#define ENSURE_SPACE_OR_RETURN(n) if (UNLIKELY(ensureSpace<mode>(n))) return true
 #define RETURN_ERR(msg) return err = (msg), true
-
-#ifdef _MSC_VER
-# define NOINLINE(fn) __declspec(noinline) fn
-#else
-# define NOINLINE(fn) fn __attribute__((noinline))
-#endif
 
 inline static __m128i _mm_set1_epu8(uint8_t v) {
 	union {
@@ -154,7 +163,7 @@ public:
 	bool transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
 			size_t chunkSize = 0, uint8_t* fixedOut = nullptr) {
 
-		if (inLen_ < 5)
+		if (UNLIKELY(inLen_ < 5))
 			RETURN_ERR("Input buffer must have length >= 5");
 
 		in = in_;
@@ -249,8 +258,9 @@ private:
 	}
 
 	template<Mode mode>
-	[[nodiscard]] inline bool ensureSpace(size_t n) {
-		if (outIdx + n < outLen) [[likely]] {
+	[[nodiscard]]
+	inline bool ensureSpace(size_t n) {
+		if (LIKELY(outIdx + n < outLen)) {
 			return false;
 		}
 
@@ -284,7 +294,7 @@ private:
 		while (inIdx < end) {
 			uint8_t xc;
 			const uint8_t c = in[inIdx++];
-			if (c >= 0x20 && c != 0x22 && c != 0x5c) {
+			if (LIKELY(c >= 0x20 && c != 0x22 && c != 0x5c)) {
 				out[outIdx++] = c;
 			} else if ((xc = getEscape(c))) { // single char escape
 				ENSURE_SPACE_OR_RETURN(end - inIdx + 1);
@@ -316,7 +326,7 @@ private:
 		// Other acceptable criteria:
 		// n == 16
 		// (reinterpret_cast<intptr_t>(in + inIdx) & 0xFFF) < 0xFF0 (16B from page boundary)
-		if (n + inIdx < inLen) [[likely]] {
+		if (LIKELY(n + inIdx < inLen)) {
 			return _mm_loadu_si128(reinterpret_cast<__m128i const*>(&in[inIdx]));
 		}
 
@@ -341,7 +351,7 @@ private:
 		// Other acceptable criteria:
 		// n == 32
 		// (reinterpret_cast<intptr_t>(in + inIdx) & 0xFFF) < 0xFE0 (32B from page boundary)
-		if (n + inIdx < inLen) [[likely]] {
+		if (LIKELY(n + inIdx < inLen)) {
 			return _mm256_loadu_si256(reinterpret_cast<__m256i const*>(&in[inIdx]));
 		}
 
@@ -380,7 +390,7 @@ private:
 
 	// Safely stores n bytes. May write more than n bytes.
 	inline void store_partial_128i(__m128i v, size_t n) {
-		if (n + outIdx < outLen) [[likely]] { // TODO try with (n == 16)
+		if (LIKELY(n + outIdx < outLen)) { // TODO try with (n == 16)
 			return _mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), v);
 		}
 		store_partial_128i_slow(v, n);
@@ -394,7 +404,7 @@ private:
 
 	// Safely stores n bytes. May write more than n bytes.
 	inline void store_partial_256i(__m256i v, size_t n) {
-		if (n + outIdx < outLen) [[likely]] { // TODO try with (n == 32)
+		if (LIKELY(n + outIdx < outLen)) { // TODO try with (n == 32)
 			return _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), v);
 		}
 		store_partial_256i_slow(v, n);
@@ -546,7 +556,7 @@ private:
 		uint8_t c;
 		while ((c = in[inIdx++])) {
 			uint8_t xc;
-			if (c >= 0x20 && c != 0x22 && c != 0x5c) {
+			if (LIKELY(c >= 0x20 && c != 0x22 && c != 0x5c)) {
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = c;
 			} else if ((xc = getEscape(c))) { // single char escape
@@ -690,10 +700,10 @@ private:
 	template<ISA isa, Mode mode>
 	bool transcodeObject(bool isArray) {
 		const int32_t size = readLE<int32_t>();
-		if (size < 5)
+		if (UNLIKELY(size < 5))
 			RETURN_ERR("BSON size must be >= 5");
 
-		if (size + inIdx - 4 > inLen)
+		if (UNLIKELY(size + inIdx - 4 > inLen))
 			RETURN_ERR("BSON size exceeds input length");
 
 		int32_t arrIdx = 0;
@@ -703,9 +713,10 @@ private:
 
 		while (true) {
 			const uint8_t elementType = in[inIdx++];
-			if (elementType == 0) break;
+			if (UNLIKELY(elementType == 0))
+				break;
 
-			if (arrIdx) {
+			if (LIKELY(arrIdx)) {
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = ',';
 			}
@@ -726,7 +737,7 @@ private:
 			switch (elementType) {
 			case BSON_DATA_STRING: {
 				const int32_t size = readLE<int32_t>();
-				if (size <= 0 || static_cast<size_t>(size) > inLen - inIdx)
+				if (UNLIKELY(size <= 0 || static_cast<size_t>(size) > inLen - inIdx))
 					RETURN_ERR("Bad string length");
 
 				ENSURE_SPACE_OR_RETURN(1);
@@ -738,7 +749,7 @@ private:
 				break;
 			}
 			case BSON_DATA_OID: {
-				if (inIdx + 12 <= inLen) {
+				if (LIKELY(inIdx + 12 <= inLen)) {
 					ENSURE_SPACE_OR_RETURN(26);
 					transcodeObjectId(Enabler<isa>{});
 				} else
@@ -746,7 +757,7 @@ private:
 				break;
 			}
 			case BSON_DATA_INT: {
-				if (inIdx + 4 <= inLen) {
+				if (LIKELY(inIdx + 4 <= inLen)) {
 					const int32_t value = readLE<int32_t>();
 					uint8_t temp[INT_BUF_DIGS<int32_t>];
 					uint8_t* temp_p = temp;
@@ -759,7 +770,7 @@ private:
 				break;
 			}
 			case BSON_DATA_NUMBER: {
-				if (inIdx + 8 <= inLen) {
+				if (LIKELY(inIdx + 8 <= inLen)) {
 					const double value = readLE<double>();
 					if (std::isfinite(value)) {
 						constexpr size_t kBufferSize = 128;
@@ -778,7 +789,7 @@ private:
 				break;
 			}
 			case BSON_DATA_DATE: {
-				if (inIdx + 8 <= inLen) {
+				if (LIKELY(inIdx + 8 <= inLen)) {
 					ENSURE_SPACE_OR_RETURN(26);
 					const int64_t value = readLE<int64_t>(); // BSON encodes UTC ms since Unix epoch
 					const time_t seconds = value / 1000;
@@ -819,14 +830,19 @@ private:
 					memcpy(out + outIdx, ".000Z\"", 6);
 					n = fast_itoa(temp_p, millis);
 					outIdx += 4 - n;
+					// TODO benchmark specializing for the three possible n
+					// values. GCC inlines if specialized.
 					memcpy(out + outIdx, temp_p, n);
+					// if (n == 3) memcpy(out + outIdx, temp_p, n);
+					// if (n == 2) memcpy(out + outIdx, temp_p, n);
+					// if (n == 1) memcpy(out + outIdx, temp_p, n);
 					outIdx += n + 2;
 				} else
 					RETURN_ERR("Truncated BSON (in Date)");
 				break;
 			}
 			case BSON_DATA_BOOLEAN: {
-				if (inIdx + 1 <= inLen) {
+				if (LIKELY(inIdx + 1 <= inLen)) {
 					const uint8_t val = in[inIdx++];
 					if (val == 1) {
 						ENSURE_SPACE_OR_RETURN(4);
@@ -843,15 +859,15 @@ private:
 			}
 			case BSON_DATA_OBJECT: {
 				// Bounds check in head of this function.
-				if (transcodeObject<isa, mode>(false))
+				if (UNLIKELY((transcodeObject<isa, mode>(false))))
 					return true;
 				break;
 			}
 			case BSON_DATA_ARRAY: {
 				// Bounds check in head of this function.
-				if (transcodeObject<isa, mode>(true))
+				if (UNLIKELY((transcodeObject<isa, mode>(true))))
 					return true;
-				if (in[inIdx - 1] != 0) {
+				if (UNLIKELY(in[inIdx - 1] != 0)) {
 					err = "Invalid array terminator byte";
 					return true;
 				}
@@ -864,7 +880,7 @@ private:
 				break;
 			}
 			case BSON_DATA_LONG: {
-				if (inIdx + 8 <= inLen) {
+				if (LIKELY(inIdx + 8 <= inLen)) {
 					const int64_t value = readLE<int64_t>();
 					uint8_t temp[INT_BUF_DIGS<int64_t>];
 					uint8_t* temp_p = temp;
