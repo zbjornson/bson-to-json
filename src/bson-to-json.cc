@@ -112,6 +112,7 @@ template<> struct Enabler<0> {};
 #define ENSURE_SPACE_OR_RETURN(n) if (UNLIKELY(ensureSpace<mode>(n))) return true
 #define RETURN_ERR(msg) return err = (msg), true
 
+[[gnu::target("sse2")]]
 inline static __m128i _mm_set1_epu8(uint8_t v) {
 	union {
 		uint8_t u;
@@ -121,6 +122,7 @@ inline static __m128i _mm_set1_epu8(uint8_t v) {
 	return _mm_set1_epi8(val.i);
 }
 
+[[gnu::target("avx")]]
 inline static __m256i _mm256_set1_epu8(uint8_t v) {
 	union {
 		uint8_t u;
@@ -280,6 +282,7 @@ private:
 	// at end of in or out, which is almost always). The slow case should be
 	// reached with a `call` and there's not much point to optimize it.
 
+	[[gnu::target("sse2")]]
 	__m128i load_partial_128i_slow(size_t n) {
 		// TODO compare against a right-aligned load + shuffle when possible.
 		// TODO compare against AVX512VL+BW _mm_mask_loadu_epi8.
@@ -289,6 +292,7 @@ private:
 	}
 
 	// Safely loads n bytes. The values in xmm beyond n are undefined.
+	[[gnu::target("sse2")]]
 	inline __m128i load_partial_128i(size_t n) {
 		// Do a full load if we're 16B from the end of the input.
 		// Other acceptable criteria:
@@ -301,6 +305,7 @@ private:
 		return load_partial_128i_slow(n);
 	}
 
+	[[gnu::target("avx2")]]
 	__m256i load_partial_256i_slow(size_t n) {
 		if (n <= 16)
 			return _mm256_castsi128_si256(load_partial_128i(n));
@@ -313,6 +318,7 @@ private:
 	}
 
 	// Safely loads n bytes. The values in ymm beyond n are undefined.
+	[[gnu::target("avx2")]]
 	inline __m256i load_partial_256i(size_t n) {
 		// debug assert n != 0 && n <= 32
 		
@@ -326,6 +332,7 @@ private:
 		return load_partial_256i_slow(n);
 	}
 
+	[[gnu::target("sse2")]]
 	void store_partial_128i_slow(__m128i v, size_t n) {
 		// maskmovdqu is implicitly NT.
 		// Does AVX512BW have fast byte-granular store?
@@ -357,6 +364,7 @@ private:
 	}
 
 	// Safely stores n bytes. May write more than n bytes.
+	[[gnu::target("sse2")]]
 	inline void store_partial_128i(__m128i v, size_t n) {
 		if (LIKELY(n + outIdx < outLen)) { // TODO try with (n == 16)
 			return _mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), v);
@@ -364,6 +372,7 @@ private:
 		store_partial_128i_slow(v, n);
 	}
 
+	[[gnu::target("avx2")]]
 	void store_partial_256i_slow(__m256i v, size_t n) {
 		store_partial_128i(_mm256_castsi256_si128(v), n);
 		if (n > 16)
@@ -371,6 +380,7 @@ private:
 	}
 
 	// Safely stores n bytes. May write more than n bytes.
+	[[gnu::target("avx2")]]
 	inline void store_partial_256i(__m256i v, size_t n) {
 		if (LIKELY(n + outIdx < outLen)) { // TODO try with (n == 32)
 			return _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), v);
@@ -411,6 +421,7 @@ private:
 	}
 
 	template<Mode mode>
+	[[gnu::target("sse2,bmi")]]
 	bool writeEscapedChars(size_t n, Enabler<ISA::SSE2>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
@@ -462,6 +473,7 @@ private:
 	}
 
 	template<Mode mode>
+	[[gnu::target("sse4.2")]]
 	bool writeEscapedChars(size_t n, Enabler<ISA::SSE42>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
@@ -500,6 +512,7 @@ private:
 	}
 
 	template<Mode mode>
+	[[gnu::target("avx2,bmi")]]
 	bool writeEscapedChars(size_t n, Enabler<ISA::AVX2>) {
 		const size_t end = inIdx + n;
 		ENSURE_SPACE_OR_RETURN(n);
@@ -575,6 +588,7 @@ private:
 	// TODO SSE2
 
 	template<Mode mode>
+	[[gnu::target("sse4.2")]]
 	bool writeEscapedChars(Enabler<ISA::SSE42>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 		union {
@@ -614,6 +628,7 @@ private:
 	}
 
 	template<Mode mode>
+	[[gnu::target("avx2,bmi")]]
 	bool writeEscapedChars(Enabler<ISA::AVX2>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
 
@@ -670,6 +685,7 @@ private:
 	// TODO SSE2: arithmetic (nib + (nib < 10 ? 48 : 87))
 	// TODO SSSE3: 128-bit pshufb
 
+	[[gnu::target("avx2")]]
 	inline void transcodeObjectId(Enabler<ISA::AVX2>) {
 		__m128i a = load_partial_128i(12);
 		inIdx += 12;
