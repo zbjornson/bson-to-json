@@ -1061,7 +1061,6 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
 	Napi::Function fn;
 	char const* isa;
-	// Register spilling is an issue so we also want to compile for skylake-avx512
 	if (supports<ISA::AVX2>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::AVX2>);
 		BJTrans<ISA::AVX2>::Init(env, exports);
