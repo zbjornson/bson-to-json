@@ -283,7 +283,7 @@ private:
 	// reached with a `call` and there's not much point to optimize it.
 
 	[[gnu::target("sse2")]]
-	__m128i load_partial_128i_slow(size_t n) {
+	NOINLINE(__m128i load_partial_128i_slow(size_t n)) {
 		// TODO compare against a right-aligned load + shuffle when possible.
 		// TODO compare against AVX512VL+BW _mm_mask_loadu_epi8.
 		uint8_t x[16];
@@ -306,7 +306,7 @@ private:
 	}
 
 	[[gnu::target("avx2")]]
-	__m256i load_partial_256i_slow(size_t n) {
+	NOINLINE(__m256i load_partial_256i_slow(size_t n)) {
 		if (n <= 16)
 			return _mm256_castsi128_si256(load_partial_128i(n));
 
@@ -333,7 +333,7 @@ private:
 	}
 
 	[[gnu::target("sse2")]]
-	void store_partial_128i_slow(__m128i v, size_t n) {
+	NOINLINE(void store_partial_128i_slow(__m128i v, size_t n)) {
 		// maskmovdqu is implicitly NT.
 		// Does AVX512BW have fast byte-granular store?
 		// pblendvb for load+blend+store requires SSE4.1 and this has to work with SSE2.
@@ -373,7 +373,7 @@ private:
 	}
 
 	[[gnu::target("avx2")]]
-	void store_partial_256i_slow(__m256i v, size_t n) {
+	NOINLINE(void store_partial_256i_slow(__m256i v, size_t n)) {
 		store_partial_128i(_mm256_castsi256_si128(v), n);
 		if (n > 16)
 			store_partial_128i(_mm256_extracti128_si256(v, 1), n - 16);
@@ -1061,6 +1061,7 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
 	Napi::Function fn;
 	char const* isa;
+	// Register spilling is an issue so we also want to compile for skylake-avx512
 	if (supports<ISA::AVX2>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::AVX2>);
 		BJTrans<ISA::AVX2>::Init(env, exports);
