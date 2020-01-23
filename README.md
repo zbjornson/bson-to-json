@@ -38,7 +38,6 @@ The output of this library should be identical to
 
 TODO:
 - [ ] Fix crash when using iterator interface.
-- [ ] Try to reduce register spill
 - [ ] Refactor so it's usable as a C++ library?
 
 ## Benchmarks by BSON type (ops/sec):
