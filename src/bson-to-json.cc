@@ -699,10 +699,23 @@ private:
 			-1, 0, -1, 2, -1, 4, -1, 6, -1, 8, -1, 10, -1, 12, -1, 14
 		);
 		// Bytes to nibbles (a -> [a >> 4, a & 0b1111]):
-		__m256i doubled = _mm256_cvtepu8_epi16(a);
+
+		// Maybe 1-2 cycles lower latency than _mm256_cvtepu8_epi16 (3L1T).
+		__m256i aa = _mm256_broadcastsi128_si256(a);
+		const __m256i DUP_MASK = _mm256_setr_epi8(
+			0,0, 1,1, 2,2, 3,3, 4,4, 5,5, 6,6, 7,7,
+			8,8, 9,9, 10,10, 11,11, -1,-1,-1,-1,-1,-1,-1,-1
+		);
+		__m256i doubled = _mm256_shuffle_epi8(aa, DUP_MASK); // (1L1T)
+
 		__m256i hi = _mm256_srli_epi16(doubled, 4);
+#ifdef __AVX512VL__
+		// This is ~2% faster than shuffle+or. Not worth a dispatch.
+		__m256i bytes = _mm256_mask_shuffle_epi8(hi, 0xaaaaaaaa, doubled, ROT2);
+#else
 		__m256i lo = _mm256_shuffle_epi8(doubled, ROT2);
-		__m256i bytes = _mm256_or_si256(hi, lo); // TODO AVX512: mask_shuffle to avoid the OR
+		__m256i bytes = _mm256_or_si256(hi, lo);
+#endif
 		bytes = _mm256_and_si256(bytes, _mm256_set1_epi8(0b1111));
 		// Encode hex
 		__m256i b = _mm256_shuffle_epi8(HEX_LUTR, bytes);
