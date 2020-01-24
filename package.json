@@ -2,7 +2,6 @@
   "name": "bson-to-json",
   "version": "0.1.0",
   "description": "Direct BSON to JSON transcoder.",
-  "main": "build/Release/bsonToJson.node",
   "repository": "https://github.com/zbjornson/bson-to-json",
   "author": "zbjornson",
   "license": "MIT",
@@ -17,6 +16,7 @@
     "mocha": "^6.2.2"
   },
   "scripts": {
+    "install": "node-gyp rebuild || exit 0",
     "test": "mocha"
   }
 }

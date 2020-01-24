@@ -400,3 +400,5 @@ exports.bsonToJson = function bsonToJson(doc, isArray) {
 	const t = new Transcoder();
 	return t.transcode(doc, isArray);
 };
+
+exports.ISE = "JavaScript";
