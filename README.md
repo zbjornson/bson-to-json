@@ -14,9 +14,18 @@ Benchmark with a ~2500-element array of medium objects (9MB BSON):
 
 <sup>1</sup> `BSON.deserialize` is the [official MongoDB js-bson implementation](https://github.com/mongodb/js-bson).
 
-## Usage
+## Installation
 
 *The C++ implementations require a C++ compiler. See instructions [here](https://github.com/nodejs/node-gyp#on-unix). If you do not have a C++ compiler, the slower JS version will be used.*
+
+```
+yarn add zbjornson/bson-to-json
+# or
+npm install zbjornson/bson-to-json
+```
+
+## Usage
+
 
 > ```ts
 > bsonToJson(bson: Uint8Array, isArray?: boolean = true): Buffer
