@@ -17,6 +17,13 @@
 # include <x86intrin.h>
 #endif
 
+#if defined(__AVX512F__) && defined(__GNUC__)
+# if __GNUC__ < 8 || (__GNUC__ == 8 && __GNUC_MINOR__ < 2)
+// https://godbolt.org/z/qNqVY5 uses movzx dst, r8 on the k reg
+#  error "GCC < 8.2 has a bug in mask register handling. Please use a newer version."
+# endif
+#endif
+
 using namespace double_conversion;
 
 using std::size_t;
@@ -130,6 +137,16 @@ inline static __m256i _mm256_set1_epu8(uint8_t v) {
 	} val;
 	val.u = v;
 	return _mm256_set1_epi8(val.i);
+}
+
+[[gnu::target("avx512f")]]
+inline static __m512i _mm512_set1_epu8(uint8_t v) {
+	union {
+		uint8_t u;
+		int8_t i;
+	} val;
+	val.u = v;
+	return _mm512_set1_epi8(val.i);
 }
 
 class Transcoder {
@@ -332,6 +349,16 @@ private:
 		return load_partial_256i_slow(n);
 	}
 
+	[[gnu::target("avx512f,avx512bw,bmi2")]]
+	inline __m512i load_partial_512i(size_t n) {
+		// if (LIKELY(n + inIdx < inLen)) {
+		// 	return _mm512_loadu_si512(&in[inIdx]);
+		// }
+
+		__mmask64 mask = _bzhi_u64(-1, n); // TODO n needs to clamp at inLen
+		return _mm512_maskz_loadu_epi8(mask, &in[inIdx]);
+	}
+
 	[[gnu::target("sse2")]]
 	NOINLINE(void store_partial_128i_slow(__m128i v, size_t n)) {
 		// maskmovdqu is implicitly NT.
@@ -386,6 +413,13 @@ private:
 			return _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), v);
 		}
 		store_partial_256i_slow(v, n);
+	}
+
+	// Safely stores n bytes. May write more than n bytes.
+	[[gnu::target("avx512f,avx512bw,bmi2")]]
+	inline void store_partial_512i(__m512i v, size_t n) {
+		__mmask64 mask = _bzhi_u64(-1, n); // TODO n needs to clamp at outLen
+		_mm512_mask_storeu_epi8(out + outIdx, mask, v);
 	}
 
 	// Writes the `\ u 0 0 ch cl` sequence
@@ -561,6 +595,56 @@ private:
 		return false;
 	}
 
+	template<Mode mode>
+	[[gnu::target("avx512f,avx512bw,bmi,bmi2")]]
+	bool writeEscapedChars(size_t n, Enabler<ISA::AVX512F>) {
+		const size_t end = inIdx + n;
+		ENSURE_SPACE_OR_RETURN(n);
+
+		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
+		// allow if (x >= 0x20 && x != 0x22 && x != 0x5c)
+
+		__m512i esch20 = _mm512_set1_epu8(0x20);
+		__m512i esch22 = _mm512_set1_epu8(0x22);
+		__m512i esch5c = _mm512_set1_epu8(0x5c);
+
+		while (inIdx < end) {
+			const size_t clampedN = n > 64 ? 64 : n;
+			__m512i chars = load_partial_512i(clampedN);
+
+			__mmask64 mask1 = _mm512_cmpge_epu8_mask(chars, esch20);
+			mask1 = _mm512_mask_cmpneq_epu8_mask(mask1, chars, esch22);
+			mask1 = _mm512_mask_cmpneq_epu8_mask(mask1, chars, esch5c);
+			// TODO is it better to use two mask regs and & them later so
+			// there's no dependency chain on the cmps?
+
+			uint64_t esRIdx = _tzcnt_u64(~mask1);
+
+			if (esRIdx > clampedN) // No chars need escaping.
+				esRIdx = clampedN;
+
+			store_partial_512i(chars, esRIdx);
+			n -= esRIdx;
+			outIdx += esRIdx;
+			inIdx += esRIdx;
+
+			if (esRIdx < clampedN) {
+				uint8_t xc;
+				uint8_t c = in[inIdx++];
+				n--;
+				if ((xc = getEscape(c))) { // single char escape
+					ENSURE_SPACE_OR_RETURN(end - inIdx + 1);
+					out[outIdx++] = '\\';
+					out[outIdx++] = xc;
+				} else { // c < 0x20, control
+					ENSURE_SPACE_OR_RETURN(end - inIdx + 5);
+					writeControlChar(c);
+				}
+			}
+		}
+		return false;
+	}
+
 	// Writes the null-terminated string from in to out, escaping per JSON spec.
 	template<Mode mode>
 	bool writeEscapedChars(Enabler<ISA::BASELINE>) {
@@ -653,6 +737,46 @@ private:
 			inIdx += esRIdx;
 
 			if (esRIdx < 32) {
+				if (in[inIdx] == 0)
+					return false;
+				
+				uint8_t xc;
+				uint8_t c = in[inIdx++];
+				if ((xc = getEscape(c))) { // single char escape
+					ENSURE_SPACE_OR_RETURN(2);
+					out[outIdx++] = '\\';
+					out[outIdx++] = xc;
+				} else { // c < 0x20, control
+					ENSURE_SPACE_OR_RETURN(6);
+					writeControlChar(c);
+				}
+			}
+		}
+		return false;
+	}
+
+	template<Mode mode>
+	[[gnu::target("avx512f,avx512bw,bmi,bmi2")]]
+	bool writeEscapedChars(Enabler<ISA::AVX512F>) {
+		__m512i esch20 = _mm512_set1_epu8(0x20);
+		__m512i esch22 = _mm512_set1_epu8(0x22);
+		__m512i esch5c = _mm512_set1_epu8(0x5c);
+
+		while (inIdx < inLen) {
+			__m512i chars = load_partial_512i(64);
+
+			__mmask64 mask1 = _mm512_cmpge_epu8_mask(chars, esch20);
+			mask1 = _mm512_mask_cmpneq_epu8_mask(mask1, chars, esch22);
+			mask1 = _mm512_mask_cmpneq_epu8_mask(mask1, chars, esch5c);
+
+			uint32_t esRIdx = static_cast<uint32_t>(_tzcnt_u64(~mask1));
+
+			ENSURE_SPACE_OR_RETURN(esRIdx);
+			store_partial_512i(chars, esRIdx);
+			outIdx += esRIdx;
+			inIdx += esRIdx;
+
+			if (esRIdx < 64) {
 				if (in[inIdx] == 0)
 					return false;
 				
@@ -1076,6 +1200,15 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
 	Napi::Function fn;
 	char const* isa;
+#ifdef B2J_USE_AVX512
+	// This is about 25% slower than the AVX2 version.
+	if (supports<ISA::AVX512F>()) {
+		// (Actually uses AVX512F, AVX512BW, BMI1, BMI2)
+		fn = Napi::Function::New(env, bsonToJson<ISA::AVX512F>);
+		BJTrans<ISA::AVX512F>::Init(env, exports);
+		isa = "AVX512";
+	} else
+#endif
 	if (supports<ISA::AVX2>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::AVX2>);
 		BJTrans<ISA::AVX2>::Init(env, exports);
