@@ -46,13 +46,13 @@ const NULL = Buffer.from("null");
 function nDigits(v) {
 	if (v < 10) return 2;
 	if (v < 100) return 3;
-	if (v < 1_000) return 4;
-	if (v < 10_000) return 5;
-	if (v < 100_000) return 6;
-	if (v < 1_000_000) return 7;
-	if (v < 10_000_000) return 8;
-	if (v < 100_000_000) return 9;
-	if (v < 1_000_000_000) return 10;
+	if (v < 1000) return 4;
+	if (v < 10000) return 5;
+	if (v < 100000) return 6;
+	if (v < 1000000) return 7;
+	if (v < 10000000) return 8;
+	if (v < 100000000) return 9;
+	if (v < 1000000000) return 10;
 	return 11;
 }
 
