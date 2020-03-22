@@ -20,10 +20,15 @@
       "defines": [
         "NAPI_DISABLE_CPP_EXCEPTIONS"
       ],
+      "cflags_cc!": [
+        # Unset Node.js v8's std.
+        "-std=gnu++0x"
+      ],
       "cflags":[
+        "-std=c++17",
         "-fvisibility=hidden",
         "-march=native",
-        "-falign-loops=32", # See readme; significant improvement for some cases
+        "-falign-loops=32",
         "-Wno-unused-function", # CPU feature detection only used on Win
         "-Wno-unused-const-variable" # cpuid regs
       ],
