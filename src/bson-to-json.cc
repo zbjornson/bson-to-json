@@ -17,7 +17,7 @@
 # include <x86intrin.h>
 #endif
 
-#if defined(__AVX512F__) && defined(__GNUC__)
+#if defined(__AVX512F__) && defined(__GNUC__) && defined(B2J_USE_AVX512)
 # if __GNUC__ < 8 || (__GNUC__ == 8 && __GNUC_MINOR__ < 2)
 // https://godbolt.org/z/qNqVY5 uses movzx dst, r8 on the k reg
 #  error "GCC < 8.2 has a bug in mask register handling. Please use a newer version."
