@@ -1,3 +1,5 @@
+![Node.js CI](https://github.com/zbjornson/bson-to-json/workflows/Node.js%20CI/badge.svg)
+
 Directly and quickly converts a BSON buffer to a JSON string stored in a Buffer.
 Useful for sending MongoDB database query results to a client over JSON+HTTP.
 
