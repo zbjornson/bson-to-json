@@ -98,7 +98,7 @@ class Transcoder {
 	}
 
 	/**
-	 * @param {Buffer} input BSON-encoded input.
+	 * @param {Uint8Array} input BSON-encoded input.
 	 * @param {boolean} isArray BSON stores arrays and objects in the same
 	 * format (arrrays are objects with numerical keys stored as strings).
 	 * @public
@@ -141,7 +141,7 @@ class Transcoder {
 	 * unrecognized or unrepresentable character). Thus there's nothing we can
 	 * do in the decoder to instead emit escape sequences.
 	 *
-	 * @param {Buffer} str
+	 * @param {Uint8Array} str
 	 * @param {number} start Inclusive.
 	 * @param {number} end Exclusive.
 	 * @private
@@ -173,7 +173,7 @@ class Transcoder {
 	}
 
 	/**
-	 * @param {Buffer} buffer
+	 * @param {Uint8Array} buffer
 	 * @param {Number} start
 	 * @private
 	 */
@@ -195,7 +195,7 @@ class Transcoder {
 	}
 
 	/**
-	 * @param {Buffer} val
+	 * @param {Uint8Array} val
 	 * @private
 	 */
 	addQuotedVal(val) {
@@ -208,7 +208,7 @@ class Transcoder {
 	}
 
 	/**
-	 * @param {Buffer} val
+	 * @param {Uint8Array} val
 	 * @private
 	 */
 	addVal(val) {
@@ -219,7 +219,7 @@ class Transcoder {
 	}
 
 	/**
-	 * @param {Buffer} in_
+	 * @param {Uint8Array} in_
 	 * @param {number} inIdx
 	 * @param {boolean} isArray
 	 * @private
@@ -397,6 +397,8 @@ class Transcoder {
 }
 
 exports.bsonToJson = function bsonToJson(doc, isArray) {
+	if (!(doc instanceof Uint8Array))
+		throw new Error("Input must be a buffer");
 	const t = new Transcoder();
 	return t.transcode(doc, isArray);
 };

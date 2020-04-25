@@ -1178,6 +1178,16 @@ template<ISA isa>
 Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 	Napi::Env env = info.Env();
 
+	if (!info[0].IsTypedArray()) {
+		Napi::Error::New(env, "Input must be a buffer").ThrowAsJavaScriptException();
+		return Napi::Value();
+	}
+
+	if (info[0].As<Napi::TypedArray>().TypedArrayType() != napi_uint8_array) {
+		Napi::Error::New(env, "Input must be a buffer").ThrowAsJavaScriptException();
+		return Napi::Value();
+	}
+
 	Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
 	bool isArray = info[1].ToBoolean().Value();
 

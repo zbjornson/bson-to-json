@@ -83,6 +83,11 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 			assert.equal(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
 		});
 
+		it("handles non-buffer inputs", function () {
+			assert.throws(() => bsonToJson(undefined),
+				new Error("Input must be a buffer"));
+		});
+
 		it("handles invalid short input", function () {
 			assert.throws(() => bsonToJson(Buffer.allocUnsafeSlow(2)),
 				new Error("Input buffer must have length >= 5"));
