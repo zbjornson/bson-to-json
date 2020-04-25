@@ -26,14 +26,19 @@ npm install zbjornson/bson-to-json
 
 ## Usage
 
+### `bsonToJson`
 
 > ```ts
+> const {bsonToJson} = require("bson-to-json");
 > bsonToJson(bson: Uint8Array, isArray?: boolean = true): Buffer
 > // (note that Buffers extend Uint8Arrays, so `bson` can be a Buffer)
 > ```
 
+Transcodes a BSON document to a JSON string stored in a Buffer.
+
 `isArray` specifies if the input is an array or not. BSON doesn't differentiate
-between arrays and objects at the top level, so this must be provided.
+between arrays and objects at the top level, so this must be provided if `bson`
+is an array.
 
 The output should be identical to `JSON.stringify(BSON.deserialize(v))`, with
 two exceptions:
@@ -45,13 +50,42 @@ two exceptions:
    module may throw different errors. (js-bson seems to rely, intentionally or
    not, on indexing past the end of a typed array returning `undefined`.)
 
+### `send`
+
 > ```ts
+> const {send} = require("bson-to-json");
+> send(cursor: MongoDbCursor, ostr: Stream.Writable): Promise<void>
+> ```
+
+Efficiently sends the contents of a MongoDB cursor to a writable stream (e.g.
+an HTTP response). The returned Promise resolves when the cursor is drained, or
+rejects in case of an error.
+
+#### Example usage in an HTTP handler
+
+```js
+const {send} = require("bson-to-json");
+async function (req, res) {
+  const cursor = await db.collection("mycol").find({name: "Zach"}, {raw: true});
+  res.setHeader("Content-Type", "application/json");
+  await send(cursor, res);
+}
+```
+
+This is the fastest way to transfer results from MongoDB to a client. MongoDB's
+`cursor.forEach` or `for await (const doc of cursor)` both have much higher CPU
+and memory overhead.
+
+### `ISE`
+
+> ```ts
+> const {ISE} = require("bson-to-json");
 > ISE: string
 > ```
 
 A constant indicating what instruction set extension was used (based on your
-CPU's available features). One of `"AVX2"`, `"SSE4.2"`, `"SSE2"`, `"Baseline"`
-or `"JavaScript"`.
+CPU's available features). One of `"AVX512"`, `"AVX2"`, `"SSE4.2"`, `"SSE2"`,
+`"Baseline"` (portable C) or `"JavaScript"`.
 
 ## Performance notes
 
@@ -67,6 +101,8 @@ or `"JavaScript"`.
   used in v8.
 * Skips decoding array keys (which BSON stores as ASCII numbers) and instead
   advances by the known number of bytes in the key.
+* The `send` method has a tight call stack and avoids allocating a Promise for
+  each document (compared to `for await...of`).
 
 ### Benchmarks by BSON type (ops/sec):
 
@@ -92,3 +128,6 @@ or `"JavaScript"`.
 - Iterator-based (streaming) interface. It's mostly working in the C++ version,
   but crashes on gc. See documentation in the `iterator` branch. I also
   experimented with C++20 coroutines in the `coroutines` branch.
+- Drop `long` dependency when Node 10 support is dropped.
+- Consider adding an option to prepend a comma to the output so it can be used
+  with MongoDB cursors more efficiently.
