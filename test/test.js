@@ -158,6 +158,8 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 	});
 }
 
+// TODO setup mongodb in CI
+if (!process.env.GITHUB_ACTIONS)
 describe("send", function () {
 	const {bsonToJson, send} = require("../index.js");
 	const mongodb = require("mongodb");
