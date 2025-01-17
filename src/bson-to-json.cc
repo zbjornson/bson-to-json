@@ -3,9 +3,6 @@
 #include <cstring> // memcpy
 #include <ctime> // gmtime
 #include <cmath> // isfinite
-#include <thread>
-#include <mutex>
-#include <condition_variable>
 #include "napi.h"
 #include "../deps/double_conversion/double-to-string.h"
 #include "cpu-detection.h"
@@ -116,7 +113,7 @@ inline static constexpr size_t nDigits(int32_t v) {
 template<int isa> struct Enabler : Enabler<isa - 1> {};
 template<> struct Enabler<0> {};
 
-#define ENSURE_SPACE_OR_RETURN(n) if (UNLIKELY(ensureSpace<mode>(n))) return true
+#define ENSURE_SPACE_OR_RETURN(n) if (UNLIKELY(ensureSpace(n))) return true
 #define RETURN_ERR(msg) return err = (msg), true
 
 [[gnu::target("sse2")]]
@@ -151,36 +148,23 @@ inline static __m512i _mm512_set1_epu8(uint8_t v) {
 
 class Transcoder {
 public:
-	enum Mode {
-		/* Reallocate the output buffer as necessary to fit entire contents. */
-		REALLOC,
-		/* Pause when output buffer is full. Adjust `out`, `outIdx` and
-		 * `outLen`, then call `resume` when ready to continue.
-		 */
-		PAUSE
-	};
-
 	uint8_t* out = nullptr;
 	size_t outIdx = 0;
 	size_t outLen = 0;
 	char const* err = nullptr;
 
-	/// <summary>
-	/// Transcodes the BSON document to JSON. Call once per lifetime of the
-	/// Transcoder instance.
-	/// </summary>
-	/// <param name="in_">BSON document</param>
-	/// <param name="inLen_">Length of input</param>
-	/// <param name="isArray">Whether or not the document is an array.</param>
-	/// <param name="chunkSize">
-	/// Initial size of the output buffer. Setting to 0 currently uses 2.5x
-	/// the inLen.
-	/// </param>
-	/// <param name="mode_">What to do when the output buffer is full.</param>
-	/// <param name="fixedOut">With Mode::PAUSE, output buffer to reuse.</param>
-	template <ISA isa, Mode mode>
+	/**
+	 * Transcodes the BSON document to JSON. Call once per lifetime of the
+	 * Transcoder instance.
+	 * @param in_ BSON document.
+	 * @param inLen_ Length of input.
+	 * @param isArray Whether or not the document is an array.
+	 * @param chunkSize Initial size of the output buffer. Setting to 0 uses
+	 * 2.5x the inLen.
+	 */
+	template <ISA isa>
 	bool transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
-			size_t chunkSize = 0, uint8_t* fixedOut = nullptr) {
+			size_t chunkSize = 0) {
 
 		if (UNLIKELY(inLen_ < 5))
 			RETURN_ERR("Input buffer must have length >= 5");
@@ -189,7 +173,7 @@ public:
 		inLen = inLen_;
 		inIdx = 0;
 
-		if (chunkSize == 0 && fixedOut == nullptr) {
+		if (chunkSize == 0) {
 			// Estimate outLen at 2.5x inLen. Expansion rates for values:
 			// ObjectId: 12B -> 24B plus 2 for quotes
 			// String: 5 for header + 1 per char -> 1 or 2 per char + 2 for quotes
@@ -204,37 +188,9 @@ public:
 			chunkSize = (inLen * 10) >> 2;
 		}
 
-		if (fixedOut == nullptr) {
-			resize(chunkSize);
-		} else {
-			out = fixedOut;
-			outLen = chunkSize;
-		}
+		resize(chunkSize);
 
-		if (mode == Mode::PAUSE) {
-			std::unique_lock<std::mutex> lk(m);
-			outIdx = outLen + 1;
-			cv.wait(lk, [&] { return outIdx == 0; });
-		}
-
-		if (transcodeObject<isa, mode>(isArray))
-			return true;
-
-		if (mode == Mode::PAUSE)
-			cv.notify_one();
-		
-		return false;
-	}
-
-	void setOutIdx(size_t to) {
-		std::unique_lock<std::mutex> lk(m);
-		outIdx = to;
-	}
-
-	void resume() {
-		cv.notify_one();
-		std::unique_lock<std::mutex> lk(m);
-		cv.wait(lk, [&] { return outIdx > 0 || isDone(); });
+		return transcodeObject<isa>(isArray);
 	}
 
 	bool isDone() {
@@ -251,8 +207,6 @@ private:
 	const uint8_t* in = nullptr;
 	size_t inIdx = 0;
 	size_t inLen = 0;
-	std::mutex m;
-	std::condition_variable cv;
 
 	template<typename T>
 	inline T readLE() {
@@ -276,23 +230,14 @@ private:
 		return false;
 	}
 
-	template<Mode mode>
 	[[nodiscard]]
 	inline bool ensureSpace(size_t n) {
 		if (LIKELY(outIdx + n < outLen)) {
 			return false;
 		}
 
-		if (mode == Mode::REALLOC) {
-			// TODO assert(outIdx + n < (outLen * 3) >> 1)
-			if (resize((outLen * 3) >> 1))
-				return true;
-		} else {
-			cv.notify_one();
-			std::unique_lock<std::mutex> lk(m);
-			cv.wait(lk, [&] { return outIdx == 0; });
-		}
-		return false;
+		// TODO assert(outIdx + n < (outLen * 3) >> 1)
+		return resize((outLen * 3) >> 1);
 	}
 
 	// The load/store methods must be small and inlinable in the fast case (not
@@ -431,7 +376,6 @@ private:
 	}
 
 	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
-	template<Mode mode>
 	bool writeEscapedChars(size_t n, Enabler<ISA::BASELINE>) {
 		const size_t end = inIdx + n;
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
@@ -454,7 +398,6 @@ private:
 		return false;
 	}
 
-	template<Mode mode>
 	[[gnu::target("sse2,bmi")]]
 	bool writeEscapedChars(size_t n, Enabler<ISA::SSE2>) {
 		const size_t end = inIdx + n;
@@ -506,7 +449,6 @@ private:
 		return false;
 	}
 
-	template<Mode mode>
 	[[gnu::target("sse4.2")]]
 	bool writeEscapedChars(size_t n, Enabler<ISA::SSE42>) {
 		const size_t end = inIdx + n;
@@ -545,7 +487,6 @@ private:
 		return false;
 	}
 
-	template<Mode mode>
 	[[gnu::target("avx2,bmi")]]
 	bool writeEscapedChars(size_t n, Enabler<ISA::AVX2>) {
 		const size_t end = inIdx + n;
@@ -595,7 +536,6 @@ private:
 		return false;
 	}
 
-	template<Mode mode>
 	[[gnu::target("avx512f,avx512bw,bmi,bmi2")]]
 	bool writeEscapedChars(size_t n, Enabler<ISA::AVX512F>) {
 		const size_t end = inIdx + n;
@@ -646,7 +586,6 @@ private:
 	}
 
 	// Writes the null-terminated string from in to out, escaping per JSON spec.
-	template<Mode mode>
 	bool writeEscapedChars(Enabler<ISA::BASELINE>) {
 		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
 		// true (worst-case expansion is 6x).
@@ -671,7 +610,6 @@ private:
 
 	// TODO SSE2
 
-	template<Mode mode>
 	[[gnu::target("sse4.2")]]
 	bool writeEscapedChars(Enabler<ISA::SSE42>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
@@ -711,7 +649,6 @@ private:
 		return false;
 	}
 
-	template<Mode mode>
 	[[gnu::target("avx2,bmi")]]
 	bool writeEscapedChars(Enabler<ISA::AVX2>) {
 		// escape if (x < 0x20 || x == 0x22 || x == 0x5c)
@@ -755,7 +692,6 @@ private:
 		return false;
 	}
 
-	template<Mode mode>
 	[[gnu::target("avx512f,avx512bw,bmi,bmi2")]]
 	bool writeEscapedChars(Enabler<ISA::AVX512F>) {
 		__m512i esch20 = _mm512_set1_epu8(0x20);
@@ -852,7 +788,7 @@ private:
 		out[outIdx++] = '"';
 	}
 
-	template<ISA isa, Mode mode>
+	template<ISA isa>
 	bool transcodeObject(bool isArray) {
 		const int32_t size = readLE<int32_t>();
 		if (UNLIKELY(size < 5))
@@ -882,7 +818,7 @@ private:
 			} else {
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
-				writeEscapedChars<mode>(Enabler<isa>{});
+				writeEscapedChars(Enabler<isa>{});
 				inIdx++; // skip null terminator
 				ENSURE_SPACE_OR_RETURN(2);
 				memcpy(out + outIdx, "\":", 2);
@@ -897,7 +833,7 @@ private:
 
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
-				writeEscapedChars<mode>(size - 1, Enabler<isa>{});
+				writeEscapedChars(size - 1, Enabler<isa>{});
 				inIdx++; // skip null terminator
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
@@ -1014,13 +950,13 @@ private:
 			}
 			case BSON_DATA_OBJECT: {
 				// Bounds check in head of this function.
-				if (UNLIKELY((transcodeObject<isa, mode>(false))))
+				if (UNLIKELY((transcodeObject<isa>(false))))
 					return true;
 				break;
 			}
 			case BSON_DATA_ARRAY: {
 				// Bounds check in head of this function.
-				if (UNLIKELY((transcodeObject<isa, mode>(true))))
+				if (UNLIKELY((transcodeObject<isa>(true))))
 					return true;
 				if (UNLIKELY(in[inIdx - 1] != 0)) {
 					err = "Invalid array terminator byte";
@@ -1074,106 +1010,6 @@ private:
 	}
 };
 
-Napi::FunctionReference constructor;
-
-template<ISA isa>
-class BJTrans : public Napi::ObjectWrap<BJTrans<isa> > {
-public:
-
-	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
-		Napi::HandleScope scope(env);
-		// gcc 7 seems to need the explicit Napi::ObjectWrap<BJTrans<isa> >::
-		Napi::Function func = Napi::ObjectWrap<BJTrans<isa> >::DefineClass(env, "BJTrans", {
-			Napi::ObjectWrap<BJTrans<isa> >::InstanceMethod(Napi::Symbol::WellKnown(env, "iterator"), &BJTrans::Iterator)
-			});
-		
-		constructor = Napi::Persistent(func);
-		constructor.SuppressDestruct();
-
-		exports.Set("BJTrans", func);
-		return exports;
-	}
-
-	BJTrans(const Napi::CallbackInfo& info) : Napi::ObjectWrap<BJTrans>(info) {
-		Napi::Env env = info.Env();
-		Napi::HandleScope scope(env);
-		Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
-		bool isArray = info[1].ToBoolean().Value();
-		uint8_t* out = nullptr;
-
-		if (info.Length() >= 2 && info[2].IsObject()) {
-			Napi::Object options = info[2].ToObject();
-
-			if (options.Has("chunkSize")) {
-				Napi::Value csOpt = options.Get("chunkSize");
-				if (csOpt.IsNumber()) {
-					chunkSize = csOpt.As<Napi::Number>().Uint32Value();
-				} else {
-					Napi::TypeError::New(env, "chunkSize must be a number").ThrowAsJavaScriptException();
-				}
-			}
-
-			if (options.Has("fixedBuffer")) {
-				auto val = options.Get("fixedBuffer");
-				if (val.IsArrayBuffer()) {
-					auto ab = options.Get("fixedBuffer").As<Napi::ArrayBuffer>();
-					chunkSize = ab.ByteLength();
-					out = static_cast<uint8_t*>(ab.Data());
-					fixedBuffer = true;
-				} else {
-					Napi::TypeError::New(env, "fixedBuffer must be an ArrayBuffer").ThrowAsJavaScriptException();
-				}
-			}
-		}
-
-		worker = std::thread { &Transcoder::transcode<isa, Transcoder::Mode::PAUSE>, &trans,
-			arr.Data(), arr.ByteLength(), isArray, chunkSize, out };
-	}
-
-private:
-	Transcoder trans;
-	std::thread worker;
-	bool fixedBuffer = false;
-	size_t chunkSize = 0;
-	bool final = false;
-
-	Napi::Value Iterator(const Napi::CallbackInfo& info) {
-		Napi::Env env = info.Env();
-
-		Napi::Object iter = Napi::Object::New(env);
-
-		iter.Set("next", Napi::Function::New(env, [&](const Napi::CallbackInfo& info) -> Napi::Object {
-			Napi::Env env = info.Env();
-
-			Napi::Object rv = Napi::Object::New(env);
-
-			if (final) {
-				rv.Set("done", true);
-				worker.join();
-			} else {
-				trans.setOutIdx(0);
-				trans.resume();
-
-				if (trans.isDone())
-					final = true;
-
-				Napi::Buffer<uint8_t> buf;
-				if (fixedBuffer) {
-					buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx, [](Napi::Env, uint8_t* data) {});
-				} else {
-					buf = Napi::Buffer<uint8_t>::Copy(env, trans.out, trans.outIdx);
-				}
-				rv.Set("value", buf);
-				rv.Set("done", false);
-			}
-
-			return rv;
-		}, "next"));
-
-		return iter;
-	}
-};
-
 template<ISA isa>
 Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 	Napi::Env env = info.Env();
@@ -1192,7 +1028,7 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 	bool isArray = info[1].ToBoolean().Value();
 
 	Transcoder trans;
-	bool status = trans.transcode<isa, Transcoder::Mode::REALLOC>(arr.Data(), arr.ByteLength(), isArray);
+	bool status = trans.transcode<isa>(arr.Data(), arr.ByteLength(), isArray);
 	if (status) {
 		std::free(trans.out);
 		Napi::Error::New(env, trans.err).ThrowAsJavaScriptException();
@@ -1215,25 +1051,20 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 	if (supports<ISA::AVX512F>()) {
 		// (Actually uses AVX512F, AVX512BW, BMI1, BMI2)
 		fn = Napi::Function::New(env, bsonToJson<ISA::AVX512F>);
-		BJTrans<ISA::AVX512F>::Init(env, exports);
 		isa = "AVX512";
 	} else
 #endif
 	if (supports<ISA::AVX2>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::AVX2>);
-		BJTrans<ISA::AVX2>::Init(env, exports);
 		isa = "AVX2";
 	} else if (supports<ISA::SSE42>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::SSE42>);
-		BJTrans<ISA::SSE42>::Init(env, exports);
 		isa = "SSE4.2";
 	} else if (supports<ISA::SSE2>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::SSE2>);
-		BJTrans<ISA::SSE2>::Init(env, exports);
 		isa = "SSE2";
 	} else {
 		fn = Napi::Function::New(env, bsonToJson<ISA::BASELINE>);
-		BJTrans<ISA::BASELINE>::Init(env, exports);
 		isa = "Baseline";
 	}
 

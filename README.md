@@ -127,9 +127,6 @@ CPU's available features). One of `"AVX512"`, `"AVX2"`, `"SSE4.2"`, `"SSE2"`,
 
 ## Future Plans
 
-- Iterator-based (streaming) interface. It's mostly working in the C++ version,
-  but crashes on gc. See documentation in the `iterator` branch. I also
-  experimented with C++20 coroutines in the `coroutines` branch.
 - Drop `long` dependency when Node 10 support is dropped.
 - Consider adding an option to prepend a comma to the output so it can be used
   with MongoDB cursors more efficiently.
