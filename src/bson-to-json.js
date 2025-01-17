@@ -182,7 +182,7 @@ class Transcoder {
 		// though, despite having extra copying and a call into C++.
 		this.ensureSpace(26);
 		const out = this.out;
-		this.out[this.outIdx++] = QUOTE;
+		out[this.outIdx++] = QUOTE;
 		for (let i = start; i < start + 12; i++) {
 			const byte = buffer[i];
 			const hi = byte >>> 4;
@@ -190,7 +190,7 @@ class Transcoder {
 			out[this.outIdx++] = hex(hi);
 			out[this.outIdx++] = hex(lo);
 		}
-		this.out[this.outIdx++] = QUOTE;
+		out[this.outIdx++] = QUOTE;
 	}
 
 	/**
