@@ -147,21 +147,20 @@ class Transcoder {
 	 * @private
 	 */
 	writeStringRange(str, start, end) {
-		this.ensureSpace(end - start);
-		let out = this.out;
 		for (let i = start; i < end; i++) {
 			const c = str[i];
 			let xc;
 			if (c >= 0x20 /* & 0xe0*/ && c !== 0x22 && c !== 0x5c) { // no escape
-				out[this.outIdx++] = c;
+				this.ensureSpace(1);
+				this.out[this.outIdx++] = c;
 			} else if ((xc = ESCAPES[c])) { // single char escape
-				this.ensureSpace(end - i + 1);
-				out = this.out;
+				this.ensureSpace(2);
+				const out = this.out;
 				out[this.outIdx++] = BACKSLASH;
 				out[this.outIdx++] = xc;
 			} else { // c < 0x20, control
-				this.ensureSpace(end - i + 5);
-				out = this.out;
+				this.ensureSpace(6);
+				const out = this.out;
 				out[this.outIdx++] = BACKSLASH;
 				out[this.outIdx++] = LOWERCASE_U;
 				out[this.outIdx++] = ZERO;
