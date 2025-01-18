@@ -103,7 +103,7 @@ class Transcoder {
 	 * format (arrrays are objects with numerical keys stored as strings).
 	 * @public
 	 */
-	transcode(input, isArray = true) {
+	transcode(input, isArray = false, chunkSize = 0) {
 		if (input.length < 5)
 			throw new Error("Input buffer must have length >= 5");
 		// Estimate outLen at 2.5x inLen. (See C++ for explanation.)
@@ -395,11 +395,15 @@ class Transcoder {
 	}
 }
 
-exports.bsonToJson = function bsonToJson(doc, isArray) {
+/**
+ * @param {Uint8Array} doc
+ * @returns {Uint8Array}
+ */
+exports.bsonToJson = function bsonToJson(doc) {
 	if (!(doc instanceof Uint8Array))
 		throw new Error("Input must be a buffer");
 	const t = new Transcoder();
-	return t.transcode(doc, isArray);
+	return t.transcode(doc);
 };
 
 exports.ISE = "JavaScript";

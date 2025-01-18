@@ -41,7 +41,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 
 		it("deserializes all JSON types", function () {
 			const bsonBuffer = bson.serialize(doc1);
-			const jsonBuffer = bsonToJson(bsonBuffer, false);
+			const jsonBuffer = bsonToJson(bsonBuffer);
 
 			const expected = JSON.parse(JSON.stringify(doc1));
 			// The JSON string will contain 1152921500580315135, which parses to
@@ -60,7 +60,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 			const obj = {str: str.toString()};
 
 			const bsonBuffer = bson.serialize(obj);
-			const jsonBuffer = bsonToJson(bsonBuffer, false);
+			const jsonBuffer = bsonToJson(bsonBuffer);
 			
 			assert.deepEqual(jsonBuffer, Buffer.from(JSON.stringify(obj)));
 			assert.equal(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
@@ -75,7 +75,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 			const obj = {s1, s2, s3, s4, s5};
 
 			const bsonBuffer = bson.serialize(obj);
-			const jsonBuffer = bsonToJson(bsonBuffer, false);
+			const jsonBuffer = bsonToJson(bsonBuffer);
 
 			// Unlike the previous test, this can't use JSON.stringify for the
 			// expectation because the lone surrogates are encoded into the BSON
@@ -102,7 +102,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				0 // fewer than 24 B
 			]);
 
-			assert.throws(() => bsonToJson(inv, true),
+			assert.throws(() => bsonToJson(inv),
 				new Error("Bad string length"));
 		});
 
@@ -115,7 +115,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				0 // fewer than 12 B
 			]);
 
-			assert.throws(() => bsonToJson(inv, true),
+			assert.throws(() => bsonToJson(inv),
 				new Error("Truncated BSON (in ObjectId)"));
 		});
 		
@@ -128,7 +128,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				0 // fewer than 12 B
 			]);
 
-			assert.throws(() => bsonToJson(inv, true),
+			assert.throws(() => bsonToJson(inv),
 				new Error("BSON size exceeds input length"));
 		});
 
@@ -140,7 +140,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				5, 0
 			]);
 
-			assert.throws(() => bsonToJson(inv, true),
+			assert.throws(() => bsonToJson(inv),
 				new Error("Truncated BSON (in Int)"));
 		});
 
@@ -152,7 +152,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				5, 0
 			]);
 
-			assert.throws(() => bsonToJson(inv, true),
+			assert.throws(() => bsonToJson(inv),
 				new Error("Truncated BSON (in Long)"));
 		});
 	});
@@ -274,7 +274,7 @@ describe("send", function () {
 						ostr.write(comma);
 					else
 						rest = true;
-					ostr.write(bsonToJson(next, false));
+					ostr.write(bsonToJson(next));
 				}
 				ostr.write(Buffer.from("]"));
 				if (!doProfile)
@@ -295,7 +295,7 @@ describe("send", function () {
 						ostr.write(comma);
 					else
 						rest = true;
-					ostr.write(bsonToJson(doc, false));
+					ostr.write(bsonToJson(doc));
 				}
 				ostr.write(Buffer.from("]"));
 				if (!doProfile)

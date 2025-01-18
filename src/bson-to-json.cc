@@ -163,7 +163,7 @@ public:
 	 * 2.5x the inLen.
 	 */
 	template <ISA isa>
-	bool transcode(const uint8_t* in_, size_t inLen_, bool isArray = true,
+	bool transcode(const uint8_t* in_, size_t inLen_, bool isArray = false,
 			size_t chunkSize = 0) {
 
 		if (UNLIKELY(inLen_ < 5))
@@ -1025,10 +1025,9 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 	}
 
 	Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
-	bool isArray = info[1].ToBoolean().Value();
 
 	Transcoder trans;
-	bool status = trans.transcode<isa>(arr.Data(), arr.ByteLength(), isArray);
+	bool status = trans.transcode<isa>(arr.Data(), arr.ByteLength());
 	if (status) {
 		std::free(trans.out);
 		Napi::Error::New(env, trans.err).ThrowAsJavaScriptException();

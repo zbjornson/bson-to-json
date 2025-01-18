@@ -32,15 +32,11 @@ npm install zbjornson/bson-to-json
 
 > ```ts
 > const {bsonToJson} = require("bson-to-json");
-> bsonToJson(bson: Uint8Array, isArray?: boolean = true): Buffer
+> bsonToJson(bson: Uint8Array): Buffer
 > // (note that Buffers extend Uint8Arrays, so `bson` can be a Buffer)
 > ```
 
 Transcodes a BSON document to a JSON string stored in a Buffer.
-
-`isArray` specifies if the input is an array or not. BSON doesn't differentiate
-between arrays and objects at the top level, so this must be provided if `bson`
-is an array.
 
 The output should be identical to `JSON.stringify(BSON.deserialize(v))`, with
 two exceptions:

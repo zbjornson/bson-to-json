@@ -2,8 +2,8 @@
 "use strict";
 
 /**
- * Exercises decoding an array of a single type. Source BSON fits in less than
- * half of L1 cache. Invoke with:
+ * Exercises decoding lots of a single type. Source BSON fits in less than half
+ * of L1 cache. Invoke with:
  *
  *     node ./benchmark/types.js space separated list of types
  * 
@@ -32,8 +32,8 @@ function addAndRun(name, buf) {
 	console.log(name);
 	// NB: this returns an object with numeric keys
 	suite.add("js-bson", () => Buffer.from(JSON.stringify(bson.deserialize(buf))));
-	suite.add("bsonToJson JS", () => JS.bsonToJson(buf, true));
-	suite.add("bsonToJson C++", () => CPP.bsonToJson(buf, true));
+	suite.add("bsonToJson JS", () => JS.bsonToJson(buf));
+	suite.add("bsonToJson C++", () => CPP.bsonToJson(buf));
 	suite.run();
 }
 
