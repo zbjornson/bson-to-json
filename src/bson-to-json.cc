@@ -338,7 +338,7 @@ private:
 	// Safely stores n bytes. May write more than n bytes.
 	[[gnu::target("sse2")]]
 	inline void store_partial_128i(__m128i v, size_t n) {
-		if (LIKELY(n + outIdx < outLen)) { // TODO try with (n == 16)
+		if (LIKELY(16 + outIdx < outLen)) {
 			return _mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), v);
 		}
 		store_partial_128i_slow(v, n);
@@ -354,7 +354,7 @@ private:
 	// Safely stores n bytes. May write more than n bytes.
 	[[gnu::target("avx2")]]
 	inline void store_partial_256i(__m256i v, size_t n) {
-		if (LIKELY(n + outIdx < outLen)) { // TODO try with (n == 32)
+		if (LIKELY(32 + outIdx < outLen)) {
 			return _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), v);
 		}
 		store_partial_256i_slow(v, n);
