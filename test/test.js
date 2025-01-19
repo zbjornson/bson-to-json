@@ -35,7 +35,7 @@ global.describe = global.describe || function describe(label, fn) { fn(); };
 global.it = global.it || function it(label, fn) { fn(); };
 
 for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/Release/bsonToJson.node"]]) {
-	const {bsonToJson} = require(loc);
+	const {bsonToJson, PopulateInfo} = require(loc);
 
 	describe(`bson2json - ${name}`, function () {
 
@@ -81,6 +81,40 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 			// expectation because the lone surrogates are encoded into the BSON
 			// as replacement characters.
 			assert.equal(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
+		});
+
+		it("populates paths", function () {
+			const ref1 = {
+				_id: new bson.ObjectId(),
+				prop1: "hello"
+			};
+
+			const doc1 = {
+				k1: "hey",
+				localKey: ref1._id,
+				em1: {
+					k2: "yo",
+					em2: {
+						k3: 123
+					},
+					arr1: [
+						"hey",
+						{k4: ref1._id}
+					]
+				},
+				t1: 2
+			};
+
+			const populateInfo = new PopulateInfo();
+			populateInfo.addItems("localKey", [bson.serialize(ref1)]);
+			populateInfo.addItems("em1.arr1.k4", [bson.serialize(ref1)]);
+
+			const bsonBuffer = bson.serialize(doc1);
+			const jsonBuffer = bsonToJson(bsonBuffer, populateInfo);
+			assert.strictEqual(
+				jsonBuffer.toString(),
+				`{"k1":"hey","localKey":{"_id":"${ref1._id}","prop1":"hello"},"em1":{"k2":"yo","em2":{"k3":123},"arr1":["hey",{"k4":{"_id":"${ref1._id}","prop1":"hello"}}]},"t1":2}`
+			);
 		});
 
 		it("handles non-buffer inputs", function () {
@@ -160,7 +194,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 
 // TODO setup mongodb in CI
 if (!process.env.GITHUB_ACTIONS)
-describe("send", function () {
+describe.skip("send", function () {
 	const {bsonToJson, send} = require("../index.js");
 	const mongodb = require("mongodb");
 	const N = process.argv.includes("--benchmark") ? 2000 : 10;

@@ -32,11 +32,14 @@ npm install zbjornson/bson-to-json
 
 > ```ts
 > const {bsonToJson} = require("bson-to-json");
-> bsonToJson(bson: Uint8Array): Buffer
+> bsonToJson(bson: Uint8Array, populateInfo? PopulateInfo): Buffer
 > // (note that Buffers extend Uint8Arrays, so `bson` can be a Buffer)
 > ```
 
 Transcodes a BSON document to a JSON string stored in a Buffer.
+
+`populateInfo` is an optional instance of the `PopulateInfo` class that is used
+for client-side joins.
 
 The output should be identical to `JSON.stringify(BSON.deserialize(v))`, with
 two exceptions:

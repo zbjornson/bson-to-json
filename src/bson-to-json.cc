@@ -3,6 +3,9 @@
 #include <cstring> // memcpy
 #include <ctime> // gmtime
 #include <cmath> // isfinite
+#include <unordered_map>
+#include <string>
+#include <array>
 #include "napi.h"
 #include "../deps/double_conversion/double-to-string.h"
 #include "cpu-detection.h"
@@ -146,12 +149,121 @@ inline static __m512i _mm512_set1_epu8(uint8_t v) {
 	return _mm512_set1_epi8(val.i);
 }
 
+using ObjectId = std::array<uint8_t, 12>;
+
+struct ObjectIdHasher {
+	size_t operator()(const ObjectId oid) const {
+		// The low 8 bytes are high-entropy, so we can just use them.
+		size_t hash;
+		memcpy(&hash, oid.data() + 4, sizeof(size_t));
+		return hash;
+		// Compare to the hash fn in libbson:
+		// https://github.com/mongodb/mongo-c-driver/blob/1e4d7fbaa00b8529309e430d0dccebf4275fe5cf/src/libbson/src/bson/bson-oid.h#L111
+	}
+};
+
+struct ObjectIdEquals {
+	bool operator()(const ObjectId a, const ObjectId b) const {
+		// Compare highest-entropy bytes first.
+		return std::memcmp(a.data() + 4, b.data() + 4, 8) == 0 &&
+			std::memcmp(a.data(), b.data(), 4) == 0;
+	}
+};
+
+struct SizedBuffer {
+	size_t size;
+	uint8_t* data;
+};
+
+using ObjectIdMap = std::unordered_map<ObjectId, SizedBuffer, ObjectIdHasher, ObjectIdEquals>;
+
+template <ISA isa>
+class PopulateInfo : public Napi::ObjectWrap<PopulateInfo<isa> > {
+public:
+	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
+		Napi::Function func = DefineClass(env, "PopulateInfo", {
+			InstanceMethod<&PopulateInfo<isa>::AddItems>("addItems"),
+			InstanceMethod<&PopulateInfo<isa>::RepeatPath>("repeatPath")
+		});
+
+		Napi::FunctionReference* constructor = new Napi::FunctionReference();
+
+		// Create a persistent reference to the class constructor. This will
+		// allow a function called on a class prototype and a function called on
+		// an instance of a class to be distinguished from each other.
+		*constructor = Napi::Persistent(func);
+		exports.Set("PopulateInfo", func);
+
+		// Store the constructor as the add-on instance data. This will allow
+		// this add-on to support multiple instances of itself running on
+		// multiple worker threads, as well as multiple instances of itself
+		// running in different contexts on the same thread.
+		//
+		// By default, the value set on the environment here will be destroyed
+		// when the add-on is unloaded using the `delete` operator, but it is
+		// also possible to supply a custom deleter.
+		env.SetInstanceData<Napi::FunctionReference>(constructor);
+
+		return exports;
+	}
+
+	PopulateInfo::PopulateInfo(const Napi::CallbackInfo& info) : Napi::ObjectWrap<PopulateInfo>(info) {}
+
+	PopulateInfo::~PopulateInfo() {
+		for (auto& [path, map] : paths) {
+			for (auto& [oid, sb] : map) {
+				if (sb.data != nullptr) {
+					std::free(sb.data);
+					sb.data = nullptr;
+				}
+			}
+		}
+	}
+
+	/**
+	 * 0. String        Path name
+	 * 1. Uint8Array[]  Array of BSON buffers
+	 */
+	void AddItems(const Napi::CallbackInfo& info);
+
+	/**
+	 * Reuses items from one path for another path without duplicating the data.
+	 *
+	 * 0. String  Path that has already had addItems called for it.
+	 * 1. String  Path that should have the same Map as the first path.
+	 */
+	void RepeatPath(const Napi::CallbackInfo& info) {
+		Napi::Env env = info.Env();
+
+		if (!info[0].IsString() || !info[1].IsString()) {
+			Napi::TypeError::New(env, "Expected 2 strings").ThrowAsJavaScriptException();
+			return;
+		}
+
+		std::string path1 = info[0].As<Napi::String>().Utf8Value();
+		std::string path2 = info[1].As<Napi::String>().Utf8Value();
+
+		auto it = paths.find(path1);
+		if (it == paths.end()) {
+			Napi::TypeError::New(env, "Path not found").ThrowAsJavaScriptException();
+			return;
+		}
+
+		paths[path2] = it->second;
+	}
+
+	// TODO(perf) can this use string_view?
+	std::unordered_map<std::string, ObjectIdMap> paths;
+};
+
 class Transcoder {
 public:
 	uint8_t* out = nullptr;
 	size_t outIdx = 0;
 	size_t outLen = 0;
-	char const* err = nullptr;
+	const char* err = nullptr;
+	std::string currentPath;
+	ObjectId docId;
 
 	/**
 	 * Transcodes the BSON document to JSON. Call once per lifetime of the
@@ -163,8 +275,13 @@ public:
 	 * 2.5x the inLen.
 	 */
 	template <ISA isa>
-	bool transcode(const uint8_t* in_, size_t inLen_, bool isArray = false,
-			size_t chunkSize = 0) {
+	bool transcode(
+		const uint8_t* in_,
+		size_t inLen_,
+		bool isArray = false,
+		size_t chunkSize = 0,
+		PopulateInfo<isa>* populateInfo = nullptr
+	) {
 
 		if (UNLIKELY(inLen_ < 5))
 			RETURN_ERR("Input buffer must have length >= 5");
@@ -190,7 +307,7 @@ public:
 
 		resize(chunkSize);
 
-		return transcodeObject<isa>(isArray);
+		return transcodeObject<isa>(isArray, populateInfo);
 	}
 
 	bool isDone() {
@@ -789,7 +906,11 @@ private:
 	}
 
 	template<ISA isa>
-	bool transcodeObject(bool isArray) {
+	bool transcodeObject(
+		bool isArray,
+		PopulateInfo<isa>* populateInfo,
+		std::string baseKey = ""
+	) {
 		const int32_t size = readLE<int32_t>();
 		if (UNLIKELY(size < 5))
 			RETURN_ERR("BSON size must be >= 5");
@@ -818,7 +939,11 @@ private:
 			} else {
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';
+				size_t keyStart = inIdx;
 				writeEscapedChars(Enabler<isa>{});
+				currentPath = baseKey.empty() ?
+					std::string(in + keyStart, in + inIdx) :
+					baseKey + "." + std::string(in + keyStart, in + inIdx);
 				inIdx++; // skip null terminator
 				ENSURE_SPACE_OR_RETURN(2);
 				memcpy(out + outIdx, "\":", 2);
@@ -841,6 +966,26 @@ private:
 			}
 			case BSON_DATA_OID: {
 				if (LIKELY(inIdx + 12 <= inLen)) {
+					if (baseKey.empty() && currentPath == "_id") {
+						memcpy(docId.data(), in + inIdx, 12);
+					}
+
+					if (populateInfo) {
+						auto idMapForPath = populateInfo->paths.find(currentPath);
+						if (idMapForPath != populateInfo->paths.end()) {
+							ObjectId id;
+							memcpy(id.data(), in + inIdx, 12);
+							auto doc = idMapForPath->second.find(id);
+							if (doc != idMapForPath->second.end()) {
+								ENSURE_SPACE_OR_RETURN(doc->second.size);
+								memcpy(out + outIdx, doc->second.data, doc->second.size);
+								outIdx += doc->second.size;
+								inIdx += 12;
+								break;
+							}
+						}
+					}
+
 					ENSURE_SPACE_OR_RETURN(26);
 					transcodeObjectId(Enabler<isa>{});
 				} else
@@ -950,13 +1095,13 @@ private:
 			}
 			case BSON_DATA_OBJECT: {
 				// Bounds check in head of this function.
-				if (UNLIKELY((transcodeObject<isa>(false))))
+				if (UNLIKELY((transcodeObject<isa>(false, populateInfo, currentPath))))
 					return true;
 				break;
 			}
 			case BSON_DATA_ARRAY: {
 				// Bounds check in head of this function.
-				if (UNLIKELY((transcodeObject<isa>(true))))
+				if (UNLIKELY((transcodeObject<isa>(true, populateInfo, currentPath))))
 					return true;
 				if (UNLIKELY(in[inIdx - 1] != 0)) {
 					err = "Invalid array terminator byte";
@@ -1010,6 +1155,41 @@ private:
 	}
 };
 
+/**
+ * 0. String        Path name
+ * 1. Uint8Array[]  Array of BSON buffers
+ */
+template<ISA isa>
+void PopulateInfo<isa>::AddItems(const Napi::CallbackInfo& info) {
+	Napi::Env env = info.Env();
+	Napi::String path = info[0].As<Napi::String>();
+	Napi::Array buffers = info[1].As<Napi::Array>();
+	uint32_t nBuffers = buffers.Length();
+	paths.try_emplace(path.Utf8Value(), ObjectIdMap());
+	ObjectIdMap& map = paths[path.Utf8Value()];
+	for (uint32_t i = 0; i < nBuffers; i++) {
+		Napi::Uint8Array buffer = buffers.Get(i).As<Napi::Uint8Array>();
+
+		Transcoder trans;
+		bool status = trans.transcode<isa>(buffer.Data(), buffer.ByteLength(), false);
+		if (status) {
+			std::free(trans.out);
+			Napi::Error::New(env, trans.err).ThrowAsJavaScriptException();
+			return;
+		}
+
+		SizedBuffer sb;
+		sb.size = trans.outIdx;
+		sb.data = static_cast<uint8_t*>(std::malloc(sb.size));
+		if (sb.data == nullptr) {
+			Napi::Error::New(env, "Allocation failure").ThrowAsJavaScriptException();
+			return;
+		}
+		std::memcpy(sb.data, trans.out, sb.size);
+		map[trans.docId] = sb;
+	}
+}
+
 template<ISA isa>
 Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 	Napi::Env env = info.Env();
@@ -1026,8 +1206,15 @@ Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
 
 	Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
 
+	PopulateInfo<isa>* pi = nullptr;
+	if (info.Length() == 2) {
+		Napi::Object obj = info[1].As<Napi::Object>();
+		// Skipping instanceof check - lazy
+		pi = Napi::ObjectWrap<PopulateInfo<isa> >::Unwrap(obj);
+	}
+
 	Transcoder trans;
-	bool status = trans.transcode<isa>(arr.Data(), arr.ByteLength());
+	bool status = trans.transcode<isa>(arr.Data(), arr.ByteLength(), false, 0, pi);
 	if (status) {
 		std::free(trans.out);
 		Napi::Error::New(env, trans.err).ThrowAsJavaScriptException();
@@ -1050,20 +1237,25 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
 	if (supports<ISA::AVX512F>()) {
 		// (Actually uses AVX512F, AVX512BW, BMI1, BMI2)
 		fn = Napi::Function::New(env, bsonToJson<ISA::AVX512F>);
+		PopulateInfo<ISA::AVX512F>::Init(env, exports);
 		isa = "AVX512";
 	} else
 #endif
 	if (supports<ISA::AVX2>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::AVX2>);
+		PopulateInfo<ISA::AVX2>::Init(env, exports);
 		isa = "AVX2";
 	} else if (supports<ISA::SSE42>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::SSE42>);
+		PopulateInfo<ISA::SSE42>::Init(env, exports);
 		isa = "SSE4.2";
 	} else if (supports<ISA::SSE2>()) {
 		fn = Napi::Function::New(env, bsonToJson<ISA::SSE2>);
+		PopulateInfo<ISA::SSE2>::Init(env, exports);
 		isa = "SSE2";
 	} else {
 		fn = Napi::Function::New(env, bsonToJson<ISA::BASELINE>);
+		PopulateInfo<ISA::BASELINE>::Init(env, exports);
 		isa = "Baseline";
 	}
 

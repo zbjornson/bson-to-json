@@ -92,25 +92,71 @@ function hex(nibble) {
 	return nibble + (nibble < 10 ? 48 : 87);
 }
 
+class PopulateInfo {
+	constructor() {
+		/** @type {Map<string, Map<string, Uint8Array>>} */
+		this.paths = new Map();
+	}
+
+	/**
+	 * @param {string} path
+	 * @param {Uint8Array[]} items
+	 */
+	addItems(path, items) {
+		if (!this.paths.has(path))
+			this.paths.set(path, new Map());
+		const map = /** @type {Map<string, Uint8Array>} */ (this.paths.get(path));
+		for (const item of items) {
+			const t = new Transcoder();
+			const jsonBuf = t.transcode(item);
+			map.set(t.docId, jsonBuf);
+		}
+	}
+
+	/**
+	 * @param {string} path1
+	 * @param {string} path2
+	 */
+	repeatPath(path1, path2) {
+		const p1Map = this.paths.get(path1);
+		if (!p1Map)
+			throw new Error("Path not found: " + path1);
+		this.paths.set(path2, p1Map);
+	}
+}
+
+exports.PopulateInfo = PopulateInfo;
+
 class Transcoder {
 	constructor() {
+		/** @private */
 		this.outIdx = 0;
+		/** @private */
+		this.currentPath = "";
+		/** @type {Buffer} */
+		// @ts-expect-error
+		this.out;
+		/** @type {string} */
+		this.docId = "";
 	}
 
 	/**
 	 * @param {Uint8Array} input BSON-encoded input.
-	 * @param {boolean} isArray BSON stores arrays and objects in the same
-	 * format (arrrays are objects with numerical keys stored as strings).
+	 * @param {boolean} [isArray] BSON stores arrays and objects in the same
+	 * format (arrays are objects with numerical keys stored as strings).
+	 * @param {number} [chunkSize] Initial size of the output buffer. Setting to
+	 * 0 uses 2.5x the inLen.
+	 * @param {PopulateInfo} [populateInfo] Provide to populate parsed objects.
 	 * @public
 	 */
-	transcode(input, isArray = false, chunkSize = 0) {
+	transcode(input, isArray = false, chunkSize = 0, populateInfo) {
 		if (input.length < 5)
 			throw new Error("Input buffer must have length >= 5");
 		// Estimate outLen at 2.5x inLen. (See C++ for explanation.)
-		// TODO is it noticeable if this is the next multiple of 4096?
-		this.out = Buffer.alloc((input.length * 10) >> 2);
+		chunkSize ||= (input.length * 10) >> 2;
+		this.out = Buffer.alloc(chunkSize);
 		this.outIdx = 0;
-		this.transcodeObject(input, 0, isArray);
+		this.transcodeObject(input, 0, isArray, populateInfo);
 		return this.out.slice(0, this.outIdx);
 	}
 
@@ -172,6 +218,25 @@ class Transcoder {
 	}
 
 	/**
+	 * Reads an ObjectId as a string.
+	 * @param {Uint8Array} buffer
+	 * @param {Number} start
+	 * @returns {string}
+	 * @private
+	 */
+	readObjectId(buffer, start) {
+		let str = "";
+		for (let i = start; i < start + 12; i++) {
+			// TODO(perf) optimize
+			const byte = buffer[i];
+			const hi = byte >>> 4;
+			const lo = byte & 0xF;
+			str += String.fromCharCode(hex(hi)) + String.fromCharCode(hex(lo));
+		}
+		return str;
+	}
+
+	/**
 	 * @param {Uint8Array} buffer
 	 * @param {Number} start
 	 * @private
@@ -191,6 +256,16 @@ class Transcoder {
 			out[this.outIdx++] = hex(lo);
 		}
 		out[this.outIdx++] = QUOTE;
+	}
+
+	/**
+	 * @param {Uint8Array} buffer
+	 * @private
+	 */
+	writeBuffer(buffer) {
+		this.ensureSpace(buffer.length);
+		this.out.set(buffer, this.outIdx);
+		this.outIdx += buffer.length;
 	}
 
 	/**
@@ -221,9 +296,11 @@ class Transcoder {
 	 * @param {Uint8Array} in_
 	 * @param {number} inIdx
 	 * @param {boolean} isArray
+	 * @param {PopulateInfo} [populateInfo]
+	 * @param {string} [baseKey]
 	 * @private
 	 */
-	transcodeObject(in_, inIdx, isArray) {
+	transcodeObject(in_, inIdx, isArray, populateInfo, baseKey) {
 		const inLen = in_.length;
 		const size = readInt32LE(in_, inIdx);
 
@@ -269,6 +346,8 @@ class Transcoder {
 				this.ensureSpace(2);
 				this.out[this.outIdx++] = QUOTE;
 				this.out[this.outIdx++] = COLON;
+				const key = in_.subarray(nameStart, nameEnd);
+				this.currentPath = baseKey ? `${baseKey}.${key}` : `${key}`;
 			}
 
 			switch (elementType) {
@@ -289,7 +368,24 @@ class Transcoder {
 			case BSON_DATA_OID: {
 				if (inIdx + 12 > inLen)
 					throw new Error("Truncated BSON (in ObjectId)");
-				this.writeObjectId(in_, inIdx);
+
+				if (!baseKey && this.currentPath === "_id") {
+					this.docId = this.readObjectId(in_, inIdx);
+				}
+
+				const idMapForPath = populateInfo?.paths.get(this.currentPath);
+				if (idMapForPath) {
+					const id = this.readObjectId(in_, inIdx);
+					const doc = idMapForPath.get(id);
+					if (doc) {
+						this.writeBuffer(doc);
+					} else {
+						// doc missing, write ObjectId as fallback
+						this.writeObjectId(in_, inIdx);
+					}
+				} else {
+					this.writeObjectId(in_, inIdx);
+				}
 				inIdx += 12;
 				break;
 			}
@@ -336,13 +432,13 @@ class Transcoder {
 			}
 			case BSON_DATA_OBJECT: {
 				const objectSize = readInt32LE(in_, inIdx);
-				this.transcodeObject(in_, inIdx, false);
+				this.transcodeObject(in_, inIdx, false, populateInfo, this.currentPath);
 				inIdx += objectSize;
 				break;
 			}
 			case BSON_DATA_ARRAY: {
 				const objectSize = readInt32LE(in_, inIdx);
-				this.transcodeObject(in_, inIdx, true);
+				this.transcodeObject(in_, inIdx, true, populateInfo, this.currentPath);
 				inIdx += objectSize;
 				if (in_[inIdx - 1] !== 0)
 					throw new Error("Invalid array terminator byte");
@@ -397,13 +493,14 @@ class Transcoder {
 
 /**
  * @param {Uint8Array} doc
+ * @param {PopulateInfo} [populateInfo]
  * @returns {Uint8Array}
  */
-exports.bsonToJson = function bsonToJson(doc) {
+exports.bsonToJson = function bsonToJson(doc, populateInfo) {
 	if (!(doc instanceof Uint8Array))
 		throw new Error("Input must be a buffer");
 	const t = new Transcoder();
-	return t.transcode(doc);
+	return t.transcode(doc, false, 0, populateInfo);
 };
 
 exports.ISE = "JavaScript";
