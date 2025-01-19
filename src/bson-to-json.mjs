@@ -330,8 +330,8 @@ export class Transcoder {
 				// Skip the number of digits in the key.
 				inIdx += nDigits(arrIdx);
 			} else {
-				// Name is a null-terminated string. TODO we can copy bytes as
-				// we search.
+				// Name is a null-terminated string. TODO(perf) we can copy
+				// bytes as we search.
 				let nameStart = inIdx;
 				let nameEnd = inIdx;
 				while (in_[nameEnd] !== 0 && nameEnd < inLen)
@@ -402,7 +402,7 @@ export class Transcoder {
 			case BSON_DATA_NUMBER: {
 				if (8 + inIdx > inLen)
 					throw new Error("Truncated BSON (in Int)");
-				// const value = in_.readDoubleLE(inIdx); // not sure which is faster TODO
+				// const value = in_.readDoubleLE(inIdx); // not sure which is faster TODO (perf)
 				const value = readDoubleLE(in_, inIdx);
 				inIdx += 8;
 				if (Number.isFinite(value)) {

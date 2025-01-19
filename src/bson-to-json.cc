@@ -427,8 +427,8 @@ private:
 
 	[[gnu::target("sse2")]]
 	NOINLINE(__m128i load_partial_128i_slow(size_t n)) {
-		// TODO compare against a right-aligned load + shuffle when possible.
-		// TODO compare against AVX512VL+BW _mm_mask_loadu_epi8.
+		// TODO(perf) compare against a right-aligned load + shuffle when possible.
+		// TODO(perf) compare against AVX512VL+BW _mm_mask_loadu_epi8.
 		uint8_t x[16];
 		for (size_t i = 0; i < n; i++) x[i] = in[inIdx + i];
 		return _mm_loadu_si128(reinterpret_cast<__m128i*>(x));
@@ -490,7 +490,7 @@ private:
 		// maskmovdqu is implicitly NT.
 		// Does AVX512BW have fast byte-granular store?
 		// pblendvb for load+blend+store requires SSE4.1 and this has to work with SSE2.
-		// TODO Try _mm_storeu_si128(temp, v), memcpy(out + outIdx, temp, n)?
+		// TODO(perf) Try _mm_storeu_si128(temp, v), memcpy(out + outIdx, temp, n)?
 		union {
 			int8_t  i8[16];
 			int16_t i16[8];
@@ -559,8 +559,8 @@ private:
 	// Writes n characters from in to out, escaping per ECMA-262 sec 24.5.2.2.
 	bool writeEscapedChars(size_t n, Enabler<ISA::BASELINE>) {
 		const size_t end = inIdx + n;
-		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
-		// true (worst-case expansion is 6x).
+		// TODO(perf) the inner ensureSpace can be skipped when ensureSpace(n * 6)
+		// is true (worst-case expansion is 6x).
 		ENSURE_SPACE_OR_RETURN(n);
 		while (inIdx < end) {
 			uint8_t xc;
@@ -736,7 +736,7 @@ private:
 			__mmask64 mask1 = _mm512_cmpge_epu8_mask(chars, esch20);
 			mask1 = _mm512_mask_cmpneq_epu8_mask(mask1, chars, esch22);
 			mask1 = _mm512_mask_cmpneq_epu8_mask(mask1, chars, esch5c);
-			// TODO is it better to use two mask regs and & them later so
+			// TODO(perf) is it better to use two mask regs and & them later so
 			// there's no dependency chain on the cmps?
 
 			uint64_t esRIdx = _tzcnt_u64(~mask1);
@@ -768,8 +768,8 @@ private:
 
 	// Writes the null-terminated string from in to out, escaping per JSON spec.
 	bool writeEscapedChars(Enabler<ISA::BASELINE>) {
-		// TODO the inner ensureSpace can be skipped when ensureSpace(n * 6) is
-		// true (worst-case expansion is 6x).
+		// TODO(perf) the inner ensureSpace can be skipped when ensureSpace(n * 6)
+		// is true (worst-case expansion is 6x).
 		uint8_t c;
 		while ((c = in[inIdx++])) {
 			uint8_t xc;
@@ -788,8 +788,6 @@ private:
 		inIdx--;
 		return false;
 	}
-
-	// TODO SSE2
 
 	[[gnu::target("sse4.2")]]
 	bool writeEscapedChars(Enabler<ISA::SSE42>) {
@@ -923,8 +921,8 @@ private:
 		out[outIdx++] = '"';
 	}
 
-	// TODO SSE2: arithmetic (nib + (nib < 10 ? 48 : 87))
-	// TODO SSSE3: 128-bit pshufb
+	// TODO(perf) SSE2: arithmetic (nib + (nib < 10 ? 48 : 87))
+	// TODO(perf) SSSE3: 128-bit pshufb
 
 	[[gnu::target("avx2")]]
 	inline void transcodeObjectId(Enabler<ISA::AVX2>) {
@@ -1128,8 +1126,8 @@ private:
 					memcpy(out + outIdx, ".000Z\"", 6);
 					n = fast_itoa(temp_p, millis);
 					outIdx += 4 - n;
-					// TODO benchmark specializing for the three possible n
-					// values. GCC inlines if specialized.
+					// TODO(perf) benchmark specializing for the three possible
+					// n values. GCC inlines if specialized.
 					memcpy(out + outIdx, temp_p, n);
 					// if (n == 3) memcpy(out + outIdx, temp_p, n);
 					// if (n == 2) memcpy(out + outIdx, temp_p, n);
