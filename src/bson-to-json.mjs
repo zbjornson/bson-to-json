@@ -1,8 +1,6 @@
 //@ts-check
-'use strict';
 
-const {Buffer} = require("buffer");
-const Long = require("long");
+import Long from "long";
 
 const BSON_DATA_NUMBER = 1;
 const BSON_DATA_STRING = 2;
@@ -92,7 +90,7 @@ function hex(nibble) {
 	return nibble + (nibble < 10 ? 48 : 87);
 }
 
-class PopulateInfo {
+export class PopulateInfo {
 	constructor() {
 		/** @type {Map<string, Map<string, Uint8Array>>} */
 		this.paths = new Map();
@@ -125,9 +123,7 @@ class PopulateInfo {
 	}
 }
 
-exports.PopulateInfo = PopulateInfo;
-
-class Transcoder {
+export class Transcoder {
 	constructor(populateInfo) {
 		/** @private */
 		this.outIdx = 0;
@@ -496,6 +492,4 @@ class Transcoder {
 	}
 }
 
-exports.Transcoder = Transcoder;
-
-exports.ISE = "JavaScript";
+export const ISE = "JavaScript";

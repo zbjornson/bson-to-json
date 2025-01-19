@@ -1,8 +1,10 @@
 //@ts-check
 "use strict";
 
-const assert = require("assert");
-const bson = require("bson");
+import assert from "node:assert";
+import * as bson from "bson";
+import {createRequire} from "node:module";
+const require = createRequire(import.meta.url);
 
 // Exercises all JSON types and nuances of JSON serialization.
 const doc1 = {
@@ -34,8 +36,8 @@ const doc1 = {
 global.describe = global.describe || function describe(label, fn) { fn(); };
 global.it = global.it || function it(label, fn) { fn(); };
 
-for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/Release/bsonToJson.node"]]) {
-	const {Transcoder, PopulateInfo} = require(loc);
+for (const [name, loc] of [["JS", "../src/bson-to-json.mjs"], ["C++", "../build/Release/bsonToJson.node"]]) {
+	const {Transcoder, PopulateInfo} = name === "JS" ? await import(loc) : require(loc);
 
 	describe(`bson2json - ${name}`, function () {
 
@@ -207,8 +209,8 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 
 // TODO setup mongodb in CI
 if (!process.env.GITHUB_ACTIONS)
-describe.skip("send", function () {
-	const {send} = require("../index.js");
+describe.skip("send", async function () {
+	const {send} = await import("../index.mjs");
 	const mongodb = require("mongodb");
 	const N = process.argv.includes("--benchmark") ? 2000 : 10;
 

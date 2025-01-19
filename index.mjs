@@ -1,10 +1,15 @@
+import {createRequire} from "node:module";
+
+let imports;
 try {
-	module.exports = require("./build/Release/bsonToJson.node");
-} catch (ex) {
-	module.exports = require("./src/bson-to-json.js");
+	const require = createRequire(import.meta.url);
+	imports = require("./build/Release/bsonToJson.node");
+} catch {
+	imports = await import("./src/bson-to-json.mjs");
 }
 
-const {Transcoder} = module.exports;
+export const Transcoder = imports.Transcoder;
+export const PopulateInfo = imports.PopulateInfo;
 
 const C_OPEN_SQ = Buffer.from("[");
 const C_COMMA = Buffer.from(",");
@@ -16,7 +21,7 @@ const C_CLOSE_SQ = Buffer.from("]");
  * @param {import("mongodb").Cursor} cursor
  * @param {import("stream").Writable} ostr
  */
-async function send(cursor, ostr) {
+export async function send(cursor, ostr) {
 	cursor.rewind();
 
 	if (cursor.isDead())
@@ -63,5 +68,3 @@ async function send(cursor, ostr) {
 
 	ostr.end(C_CLOSE_SQ);
 }
-
-module.exports.send = send;

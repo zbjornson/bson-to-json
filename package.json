@@ -1,5 +1,6 @@
 {
   "name": "bson-to-json",
+  "main": "index.mjs",
   "version": "1.0.1",
   "description": "Direct BSON to JSON transcoder.",
   "repository": "https://github.com/zbjornson/bson-to-json",
@@ -14,11 +15,11 @@
     "beautify-benchmark": "^0.2.4",
     "benchmark": "^2.1.4",
     "bson": "^4.0.2",
-    "mocha": "^6.2.2",
+    "mocha": "^11.0.1",
     "mongodb": "^3.5.6"
   },
   "scripts": {
     "install": "node-gyp rebuild || exit 0",
-    "test": "mocha"
+    "test": "mocha test/test.mjs"
   }
 }

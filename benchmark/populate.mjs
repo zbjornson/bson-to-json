@@ -1,11 +1,11 @@
 //@ts-check
-"use strict";
 
-const benchmark = require("benchmark");
-const benchmarks = require("beautify-benchmark");
-
-const bson = require("bson");
-const JS = require("../src/bson-to-json.js");
+import benchmark from "benchmark";
+import benchmarks from "beautify-benchmark";
+import {createRequire} from "node:module";
+import * as bson from "bson";
+const JS = await import ("../src/bson-to-json.mjs");
+const require = createRequire(import.meta.url);
 const CPP = require("../build/Release/bsonToJson.node");
 
 const ref1 = {
