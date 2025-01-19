@@ -28,11 +28,12 @@ npm install zbjornson/bson-to-json
 
 ## Usage
 
-### `bsonToJson`
+### `Transcoder#transcode()`
 
 > ```ts
-> const {bsonToJson} = require("bson-to-json");
-> bsonToJson(bson: Uint8Array, populateInfo? PopulateInfo): Buffer
+> const {Transcoder, PopulateInfo} = require("bson-to-json");
+> const t = new Transcoder();
+> const buf = t.transcode(bson: Uint8Array, populateInfo?: PopulateInfo);
 > // (note that Buffers extend Uint8Arrays, so `bson` can be a Buffer)
 > ```
 

@@ -181,9 +181,9 @@ template <ISA isa>
 class PopulateInfo : public Napi::ObjectWrap<PopulateInfo<isa> > {
 public:
 	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
-		Napi::Function func = DefineClass(env, "PopulateInfo", {
-			InstanceMethod<&PopulateInfo<isa>::AddItems>("addItems"),
-			InstanceMethod<&PopulateInfo<isa>::RepeatPath>("repeatPath")
+		Napi::Function func = Napi::ObjectWrap<PopulateInfo<isa>>::DefineClass(env, "PopulateInfo", {
+			Napi::ObjectWrap<PopulateInfo<isa>>::template InstanceMethod<&PopulateInfo<isa>::AddItems>("addItems"),
+			Napi::ObjectWrap<PopulateInfo<isa>>::template InstanceMethod<&PopulateInfo<isa>::RepeatPath>("repeatPath")
 		});
 
 		Napi::FunctionReference* constructor = new Napi::FunctionReference();
@@ -207,9 +207,9 @@ public:
 		return exports;
 	}
 
-	PopulateInfo::PopulateInfo(const Napi::CallbackInfo& info) : Napi::ObjectWrap<PopulateInfo>(info) {}
+	PopulateInfo(const Napi::CallbackInfo& info) : Napi::ObjectWrap<PopulateInfo>(info) {}
 
-	PopulateInfo::~PopulateInfo() {
+	~PopulateInfo() {
 		for (auto& [path, map] : paths) {
 			for (auto& [oid, sb] : map) {
 				if (sb.data != nullptr) {
@@ -256,7 +256,8 @@ public:
 	std::unordered_map<std::string, ObjectIdMap> paths;
 };
 
-class Transcoder {
+template<ISA isa>
+class Transcoder : public Napi::ObjectWrap<Transcoder<isa> > {
 public:
 	uint8_t* out = nullptr;
 	size_t outIdx = 0;
@@ -264,32 +265,61 @@ public:
 	const char* err = nullptr;
 	std::string currentPath;
 	ObjectId docId;
+	PopulateInfo<isa>* populateInfo = nullptr;
+	inline static Napi::FunctionReference* ctor;
+	Napi::Reference<Napi::Object> populateInfoRef;
+
+	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
+		Napi::Function func = Napi::ObjectWrap<Transcoder<isa> >::DefineClass(env, "Transcoder", {
+			Napi::ObjectWrap<Transcoder<isa> >::template InstanceMethod<&Transcoder<isa>::transcodeNodeFn>("transcode")
+		});
+
+		ctor = new Napi::FunctionReference();
+		*ctor = Napi::Persistent(func);
+
+		exports.Set("Transcoder", func);
+
+		return exports;
+	}
+
+	Transcoder(const Napi::CallbackInfo& info) : Napi::ObjectWrap<Transcoder>(info) {
+		if (info.Length() == 1) {
+			Napi::Object obj = info[0].As<Napi::Object>();
+			// TODO instanceof check
+			populateInfo = Napi::ObjectWrap<PopulateInfo<isa> >::Unwrap(obj);
+			populateInfoRef = Napi::Reference<Napi::Object>::New(obj, 1);
+		}
+	}
 
 	/**
-	 * Transcodes the BSON document to JSON. Call once per lifetime of the
-	 * Transcoder instance.
+	 * Transcodes the BSON document to JSON.
 	 * @param in_ BSON document.
-	 * @param inLen_ Length of input.
-	 * @param isArray Whether or not the document is an array.
-	 * @param chunkSize Initial size of the output buffer. Setting to 0 uses
-	 * 2.5x the inLen.
 	 */
-	template <ISA isa>
-	bool transcode(
-		const uint8_t* in_,
-		size_t inLen_,
-		bool isArray = false,
-		size_t chunkSize = 0,
-		PopulateInfo<isa>* populateInfo = nullptr
-	) {
+	Napi::Value transcodeNodeFn(const Napi::CallbackInfo& info) {
+		Napi::Env env = info.Env();
 
-		if (UNLIKELY(inLen_ < 5))
-			RETURN_ERR("Input buffer must have length >= 5");
+		if (!info[0].IsTypedArray()) {
+			Napi::Error::New(env, "Input must be a buffer").ThrowAsJavaScriptException();
+			return Napi::Value();
+		}
 
-		in = in_;
-		inLen = inLen_;
+		if (info[0].As<Napi::TypedArray>().TypedArrayType() != napi_uint8_array) {
+			Napi::Error::New(env, "Input must be a buffer").ThrowAsJavaScriptException();
+			return Napi::Value();
+		}
+
+		Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
+
+		in = arr.Data();
+		inLen = arr.ByteLength();
 		inIdx = 0;
 
+		if (UNLIKELY(inLen < 5)) {
+			Napi::Error::New(env, "Input buffer must have length >= 5").ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
+
+		size_t chunkSize = 0;
 		if (chunkSize == 0) {
 			// Estimate outLen at 2.5x inLen. Expansion rates for values:
 			// ObjectId: 12B -> 24B plus 2 for quotes
@@ -305,19 +335,53 @@ public:
 			chunkSize = (inLen * 10) >> 2;
 		}
 
+		out = nullptr;
+		outLen = 0;
+		outIdx = 0;
 		resize(chunkSize);
 
-		return transcodeObject<isa>(isArray, populateInfo);
-	}
+		bool status = transcodeObject(false);
+		if (status) {
+			std::free(out);
+			Napi::Error::New(env, err).ThrowAsJavaScriptException();
+			return env.Undefined();
+		}
 
-	bool isDone() {
-		return inIdx == inLen;
-	}
+		Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(env, out, outIdx, [](Napi::Env, uint8_t* data) {
+			std::free(data);
+		});
 
-	void destroy() {
-		std::free(out);
 		out = nullptr;
+		outLen = 0;
 		outIdx = 0;
+
+		return buf;
+	}
+
+	bool transcode(
+		const uint8_t* in_,
+		size_t inLen_,
+		bool isArray = false,
+		size_t chunkSize = 0
+	) {
+
+		if (UNLIKELY(inLen_ < 5))
+			RETURN_ERR("Input buffer must have length >= 5");
+
+		in = in_;
+		inLen = inLen_;
+		inIdx = 0;
+
+		if (chunkSize == 0) {
+			chunkSize = (inLen * 10) >> 2;
+		}
+
+		out = nullptr;
+		outLen = 0;
+		outIdx = 0;
+		resize(chunkSize);
+
+		return transcodeObject(isArray);
 	}
 
 private:
@@ -905,10 +969,8 @@ private:
 		out[outIdx++] = '"';
 	}
 
-	template<ISA isa>
 	bool transcodeObject(
 		bool isArray,
-		PopulateInfo<isa>* populateInfo,
 		std::string baseKey = ""
 	) {
 		const int32_t size = readLE<int32_t>();
@@ -1095,13 +1157,13 @@ private:
 			}
 			case BSON_DATA_OBJECT: {
 				// Bounds check in head of this function.
-				if (UNLIKELY((transcodeObject<isa>(false, populateInfo, currentPath))))
+				if (UNLIKELY((transcodeObject(false, currentPath))))
 					return true;
 				break;
 			}
 			case BSON_DATA_ARRAY: {
 				// Bounds check in head of this function.
-				if (UNLIKELY((transcodeObject<isa>(true, populateInfo, currentPath))))
+				if (UNLIKELY((transcodeObject(true, currentPath))))
 					return true;
 				if (UNLIKELY(in[inIdx - 1] != 0)) {
 					err = "Invalid array terminator byte";
@@ -1167,99 +1229,61 @@ void PopulateInfo<isa>::AddItems(const Napi::CallbackInfo& info) {
 	uint32_t nBuffers = buffers.Length();
 	paths.try_emplace(path.Utf8Value(), ObjectIdMap());
 	ObjectIdMap& map = paths[path.Utf8Value()];
+
+	Napi::Object wrapedTranscoder = Transcoder<isa>::ctor->New({});
+	Transcoder<isa>* trans = Transcoder<isa>::Unwrap(wrapedTranscoder);
+
 	for (uint32_t i = 0; i < nBuffers; i++) {
 		Napi::Uint8Array buffer = buffers.Get(i).As<Napi::Uint8Array>();
 
-		Transcoder trans;
-		bool status = trans.transcode<isa>(buffer.Data(), buffer.ByteLength(), false);
+		bool status = trans->transcode(buffer.Data(), buffer.ByteLength(), false);
 		if (status) {
-			std::free(trans.out);
-			Napi::Error::New(env, trans.err).ThrowAsJavaScriptException();
+			std::free(trans->out);
+			Napi::Error::New(env, trans->err).ThrowAsJavaScriptException();
 			return;
 		}
 
 		SizedBuffer sb;
-		sb.size = trans.outIdx;
+		sb.size = trans->outIdx;
 		sb.data = static_cast<uint8_t*>(std::malloc(sb.size));
 		if (sb.data == nullptr) {
 			Napi::Error::New(env, "Allocation failure").ThrowAsJavaScriptException();
 			return;
 		}
-		std::memcpy(sb.data, trans.out, sb.size);
-		map[trans.docId] = sb;
+		std::memcpy(sb.data, trans->out, sb.size);
+		map[trans->docId] = sb;
 	}
-}
-
-template<ISA isa>
-Napi::Value bsonToJson(const Napi::CallbackInfo& info) {
-	Napi::Env env = info.Env();
-
-	if (!info[0].IsTypedArray()) {
-		Napi::Error::New(env, "Input must be a buffer").ThrowAsJavaScriptException();
-		return Napi::Value();
-	}
-
-	if (info[0].As<Napi::TypedArray>().TypedArrayType() != napi_uint8_array) {
-		Napi::Error::New(env, "Input must be a buffer").ThrowAsJavaScriptException();
-		return Napi::Value();
-	}
-
-	Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
-
-	PopulateInfo<isa>* pi = nullptr;
-	if (info.Length() == 2) {
-		Napi::Object obj = info[1].As<Napi::Object>();
-		// Skipping instanceof check - lazy
-		pi = Napi::ObjectWrap<PopulateInfo<isa> >::Unwrap(obj);
-	}
-
-	Transcoder trans;
-	bool status = trans.transcode<isa>(arr.Data(), arr.ByteLength(), false, 0, pi);
-	if (status) {
-		std::free(trans.out);
-		Napi::Error::New(env, trans.err).ThrowAsJavaScriptException();
-		return Napi::Value();
-	}
-
-	Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::New(env, trans.out, trans.outIdx, [](Napi::Env, uint8_t* data) {
-		// printf("freeing %p\n", data);
-		std::free(data);
-	});
-
-	return buf;
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
-	Napi::Function fn;
 	char const* isa;
 #ifdef B2J_USE_AVX512
-	// This is about 25% slower than the AVX2 version.
+	// This is maybe slower than the AVX2 version.
 	if (supports<ISA::AVX512F>()) {
 		// (Actually uses AVX512F, AVX512BW, BMI1, BMI2)
-		fn = Napi::Function::New(env, bsonToJson<ISA::AVX512F>);
+		Transcoder<ISA::AVX512F>::Init(env, exports);
 		PopulateInfo<ISA::AVX512F>::Init(env, exports);
 		isa = "AVX512";
 	} else
 #endif
 	if (supports<ISA::AVX2>()) {
-		fn = Napi::Function::New(env, bsonToJson<ISA::AVX2>);
+		Transcoder<ISA::AVX2>::Init(env, exports);
 		PopulateInfo<ISA::AVX2>::Init(env, exports);
 		isa = "AVX2";
 	} else if (supports<ISA::SSE42>()) {
-		fn = Napi::Function::New(env, bsonToJson<ISA::SSE42>);
+		Transcoder<ISA::SSE42>::Init(env, exports);
 		PopulateInfo<ISA::SSE42>::Init(env, exports);
 		isa = "SSE4.2";
 	} else if (supports<ISA::SSE2>()) {
-		fn = Napi::Function::New(env, bsonToJson<ISA::SSE2>);
+		Transcoder<ISA::SSE2>::Init(env, exports);
 		PopulateInfo<ISA::SSE2>::Init(env, exports);
 		isa = "SSE2";
 	} else {
-		fn = Napi::Function::New(env, bsonToJson<ISA::BASELINE>);
+		Transcoder<ISA::BASELINE>::Init(env, exports);
 		PopulateInfo<ISA::BASELINE>::Init(env, exports);
 		isa = "Baseline";
 	}
 
-	exports.Set(Napi::String::New(env, "bsonToJson"), fn);
 	exports.Set(Napi::String::New(env, "ISE"), isa);
 
 	return exports;

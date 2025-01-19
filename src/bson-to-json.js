@@ -128,16 +128,17 @@ class PopulateInfo {
 exports.PopulateInfo = PopulateInfo;
 
 class Transcoder {
-	constructor() {
+	constructor(populateInfo) {
 		/** @private */
 		this.outIdx = 0;
 		/** @private */
 		this.currentPath = "";
 		/** @type {Buffer} */
 		// @ts-expect-error
-		this.out;
+		this.out = null;
 		/** @type {string} */
 		this.docId = "";
+		this.populateInfo = populateInfo;
 	}
 
 	/**
@@ -146,18 +147,23 @@ class Transcoder {
 	 * format (arrays are objects with numerical keys stored as strings).
 	 * @param {number} [chunkSize] Initial size of the output buffer. Setting to
 	 * 0 uses 2.5x the inLen.
-	 * @param {PopulateInfo} [populateInfo] Provide to populate parsed objects.
 	 * @public
 	 */
-	transcode(input, isArray = false, chunkSize = 0, populateInfo) {
+	transcode(input, isArray = false, chunkSize = 0) {
+		if (!(input instanceof Uint8Array))
+			throw new Error("Input must be a buffer");
 		if (input.length < 5)
 			throw new Error("Input buffer must have length >= 5");
 		// Estimate outLen at 2.5x inLen. (See C++ for explanation.)
 		chunkSize ||= (input.length * 10) >> 2;
 		this.out = Buffer.alloc(chunkSize);
 		this.outIdx = 0;
-		this.transcodeObject(input, 0, isArray, populateInfo);
-		return this.out.slice(0, this.outIdx);
+		this.transcodeObject(input, 0, isArray);
+		const r = this.out.slice(0, this.outIdx);
+		// @ts-expect-error
+		this.out = null;
+		this.outIdx = 0;
+		return r;
 	}
 
 	/**
@@ -296,11 +302,10 @@ class Transcoder {
 	 * @param {Uint8Array} in_
 	 * @param {number} inIdx
 	 * @param {boolean} isArray
-	 * @param {PopulateInfo} [populateInfo]
 	 * @param {string} [baseKey]
 	 * @private
 	 */
-	transcodeObject(in_, inIdx, isArray, populateInfo, baseKey) {
+	transcodeObject(in_, inIdx, isArray, baseKey) {
 		const inLen = in_.length;
 		const size = readInt32LE(in_, inIdx);
 
@@ -373,7 +378,7 @@ class Transcoder {
 					this.docId = this.readObjectId(in_, inIdx);
 				}
 
-				const idMapForPath = populateInfo?.paths.get(this.currentPath);
+				const idMapForPath = this.populateInfo?.paths.get(this.currentPath);
 				if (idMapForPath) {
 					const id = this.readObjectId(in_, inIdx);
 					const doc = idMapForPath.get(id);
@@ -432,13 +437,13 @@ class Transcoder {
 			}
 			case BSON_DATA_OBJECT: {
 				const objectSize = readInt32LE(in_, inIdx);
-				this.transcodeObject(in_, inIdx, false, populateInfo, this.currentPath);
+				this.transcodeObject(in_, inIdx, false, this.currentPath);
 				inIdx += objectSize;
 				break;
 			}
 			case BSON_DATA_ARRAY: {
 				const objectSize = readInt32LE(in_, inIdx);
-				this.transcodeObject(in_, inIdx, true, populateInfo, this.currentPath);
+				this.transcodeObject(in_, inIdx, true, this.currentPath);
 				inIdx += objectSize;
 				if (in_[inIdx - 1] !== 0)
 					throw new Error("Invalid array terminator byte");
@@ -491,16 +496,6 @@ class Transcoder {
 	}
 }
 
-/**
- * @param {Uint8Array} doc
- * @param {PopulateInfo} [populateInfo]
- * @returns {Uint8Array}
- */
-exports.bsonToJson = function bsonToJson(doc, populateInfo) {
-	if (!(doc instanceof Uint8Array))
-		throw new Error("Input must be a buffer");
-	const t = new Transcoder();
-	return t.transcode(doc, false, 0, populateInfo);
-};
+exports.Transcoder = Transcoder;
 
 exports.ISE = "JavaScript";

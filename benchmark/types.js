@@ -32,8 +32,10 @@ function addAndRun(name, buf) {
 	console.log(name);
 	// NB: this returns an object with numeric keys
 	suite.add("js-bson", () => Buffer.from(JSON.stringify(bson.deserialize(buf))));
-	suite.add("bsonToJson JS", () => JS.bsonToJson(buf));
-	suite.add("bsonToJson C++", () => CPP.bsonToJson(buf));
+	const js = new JS.Transcoder();
+	suite.add("bsonToJson JS", () => js.transcode(buf));
+	const cpp = new CPP.Transcoder();
+	suite.add("bsonToJson C++", () => cpp.transcode(buf));
 	suite.run();
 }
 

@@ -35,13 +35,14 @@ global.describe = global.describe || function describe(label, fn) { fn(); };
 global.it = global.it || function it(label, fn) { fn(); };
 
 for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/Release/bsonToJson.node"]]) {
-	const {bsonToJson, PopulateInfo} = require(loc);
+	const {Transcoder, PopulateInfo} = require(loc);
 
 	describe(`bson2json - ${name}`, function () {
 
 		it("deserializes all JSON types", function () {
 			const bsonBuffer = bson.serialize(doc1);
-			const jsonBuffer = bsonToJson(bsonBuffer);
+			const t = new Transcoder();
+			const jsonBuffer = t.transcode(bsonBuffer);
 
 			const expected = JSON.parse(JSON.stringify(doc1));
 			// The JSON string will contain 1152921500580315135, which parses to
@@ -60,7 +61,8 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 			const obj = {str: str.toString()};
 
 			const bsonBuffer = bson.serialize(obj);
-			const jsonBuffer = bsonToJson(bsonBuffer);
+			const t = new Transcoder();
+			const jsonBuffer = t.transcode(bsonBuffer);
 			
 			assert.deepEqual(jsonBuffer, Buffer.from(JSON.stringify(obj)));
 			assert.equal(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
@@ -75,7 +77,8 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 			const obj = {s1, s2, s3, s4, s5};
 
 			const bsonBuffer = bson.serialize(obj);
-			const jsonBuffer = bsonToJson(bsonBuffer);
+			const t = new Transcoder();
+			const jsonBuffer = t.transcode(bsonBuffer);
 
 			// Unlike the previous test, this can't use JSON.stringify for the
 			// expectation because the lone surrogates are encoded into the BSON
@@ -110,7 +113,9 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 			populateInfo.addItems("em1.arr1.k4", [bson.serialize(ref1)]);
 
 			const bsonBuffer = bson.serialize(doc1);
-			const jsonBuffer = bsonToJson(bsonBuffer, populateInfo);
+			const t = new Transcoder(populateInfo);
+			const jsonBuffer = t.transcode(bsonBuffer);
+			t.transcode(bsonBuffer);
 			assert.strictEqual(
 				jsonBuffer.toString(),
 				`{"k1":"hey","localKey":{"_id":"${ref1._id}","prop1":"hello"},"em1":{"k2":"yo","em2":{"k3":123},"arr1":["hey",{"k4":{"_id":"${ref1._id}","prop1":"hello"}}]},"t1":2}`
@@ -118,12 +123,14 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 		});
 
 		it("handles non-buffer inputs", function () {
-			assert.throws(() => bsonToJson(undefined),
+			const t = new Transcoder();
+			assert.throws(() => t.transcode(undefined),
 				new Error("Input must be a buffer"));
 		});
 
 		it("handles invalid short input", function () {
-			assert.throws(() => bsonToJson(Buffer.allocUnsafeSlow(2)),
+			const t = new Transcoder();
+			assert.throws(() => t.transcode(Buffer.allocUnsafeSlow(2)),
 				new Error("Input buffer must have length >= 5"));
 		});
 
@@ -136,7 +143,8 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				0 // fewer than 24 B
 			]);
 
-			assert.throws(() => bsonToJson(inv),
+			const t = new Transcoder();
+			assert.throws(() => t.transcode(inv),
 				new Error("Bad string length"));
 		});
 
@@ -149,7 +157,8 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				0 // fewer than 12 B
 			]);
 
-			assert.throws(() => bsonToJson(inv),
+			const t = new Transcoder();
+			assert.throws(() => t.transcode(inv),
 				new Error("Truncated BSON (in ObjectId)"));
 		});
 		
@@ -162,7 +171,8 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				0 // fewer than 12 B
 			]);
 
-			assert.throws(() => bsonToJson(inv),
+			const t = new Transcoder();
+			assert.throws(() => t.transcode(inv),
 				new Error("BSON size exceeds input length"));
 		});
 
@@ -174,7 +184,8 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				5, 0
 			]);
 
-			assert.throws(() => bsonToJson(inv),
+			const t = new Transcoder();
+			assert.throws(() => t.transcode(inv),
 				new Error("Truncated BSON (in Int)"));
 		});
 
@@ -186,16 +197,18 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.js"], ["C++", "../build/R
 				5, 0
 			]);
 
-			assert.throws(() => bsonToJson(inv),
+			const t = new Transcoder();
+			assert.throws(() => t.transcode(inv),
 				new Error("Truncated BSON (in Long)"));
 		});
 	});
 }
 
+
 // TODO setup mongodb in CI
 if (!process.env.GITHUB_ACTIONS)
 describe.skip("send", function () {
-	const {bsonToJson, send} = require("../index.js");
+	const {send} = require("../index.js");
 	const mongodb = require("mongodb");
 	const N = process.argv.includes("--benchmark") ? 2000 : 10;
 
@@ -267,71 +280,6 @@ describe.skip("send", function () {
 				const cursor = await this.db.collection("test1").find({}, {raw: true});
 				const ostr = new MockOstr();
 				await send(cursor, ostr);
-				if (!doProfile)
-					assert.equal(ostr.toJSON().length, N);
-			}
-		});
-
-		// These remaining cases benchmark other ways to iterate a cursor.
-
-		// forEach has a silly call stack.
-		it("forEach", async function () {
-			for (let i = 0; i < k; i++) {
-				const cursor = await this.db.collection("test1").find({}, {raw: true});
-				const ostr = new MockOstr();
-				const comma = Buffer.from(",");
-				ostr.write(Buffer.from("["));
-				let rest = false;
-				await cursor.forEach(doc => {
-					if (rest)
-						ostr.write(comma);
-					else
-						rest = true;
-					ostr.write(bsonToJson(doc, false));
-				});
-				ostr.write(Buffer.from("]"));
-				if (!doProfile)
-					assert.equal(ostr.toJSON().length, N);
-			}
-		});
-
-		// Allocates a promise/awaits a tick per document
-		it("await next", async function () {
-			for (let i = 0; i < k; i++) {
-				const cursor = await this.db.collection("test1").find({}, {raw: true});
-				const ostr = new MockOstr();
-				const comma = Buffer.from(",");
-				ostr.write(Buffer.from("["));
-				let rest = false, next;
-				while ((next = await cursor.next())) {
-					if (rest)
-						ostr.write(comma);
-					else
-						rest = true;
-					ostr.write(bsonToJson(next));
-				}
-				ostr.write(Buffer.from("]"));
-				if (!doProfile)
-					assert.equal(ostr.toJSON().length, N);
-			}
-		});
-
-		// Allocates several promises/awaits several ticks per document
-		it("async iter", async function () {
-			for (let i = 0; i < k; i++) {
-				const cursor = await this.db.collection("test1").find({}, {raw: true});
-				const ostr = new MockOstr();
-				const comma = Buffer.from(",");
-				ostr.write(Buffer.from("["));
-				let rest = false;
-				for await (const doc of cursor) {
-					if (rest)
-						ostr.write(comma);
-					else
-						rest = true;
-					ostr.write(bsonToJson(doc));
-				}
-				ostr.write(Buffer.from("]"));
 				if (!doProfile)
 					assert.equal(ostr.toJSON().length, N);
 			}

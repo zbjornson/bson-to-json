@@ -4,7 +4,7 @@ try {
 	module.exports = require("./src/bson-to-json.js");
 }
 
-const {bsonToJson} = module.exports;
+const {Transcoder} = module.exports;
 
 const C_OPEN_SQ = Buffer.from("[");
 const C_COMMA = Buffer.from(",");
@@ -12,6 +12,7 @@ const C_CLOSE_SQ = Buffer.from("]");
 
 /**
  * Writes the entire cursor to `ostr`, closing `ostr` when done.
+ * *This particular implementation is not recommended.*
  * @param {import("mongodb").Cursor} cursor
  * @param {import("stream").Writable} ostr
  */
@@ -23,6 +24,7 @@ async function send(cursor, ostr) {
 
 	ostr.write(C_OPEN_SQ);
 
+	const t = new Transcoder();
 	let rest = false;
 	while (true) {
 		// Read all buffered documents. This loop doesn't wait for the stream to
@@ -35,12 +37,12 @@ async function send(cursor, ostr) {
 			const doc = documents[i++];
 			if (!doc)
 				break;
-			ostr.write(bsonToJson(doc, false));
+			ostr.write(t.transcode(doc));
 			ostr.write(C_COMMA);
 		}
 		const lastDoc = documents[i];
 		if (lastDoc) {
-			const shouldWaitDrain = !ostr.write(bsonToJson(lastDoc, false));
+			const shouldWaitDrain = !ostr.write(t.transcode(lastDoc));
 			cursorState.cursorIndex = documents.length;
 			if (shouldWaitDrain)
 				await new Promise(resolve => ostr.once("drain", resolve));
