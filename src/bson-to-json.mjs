@@ -171,7 +171,8 @@ export class Transcoder {
 			return false;
 		
 		const oldOut = this.out;
-		const newOut = Buffer.alloc((oldOut.length * 3) >> 1);
+		const m = Math.max(n, oldOut.length);
+		const newOut = Buffer.alloc((m * 3) >> 1);
 		oldOut.copy(newOut);
 		this.out = newOut;
 		return true;

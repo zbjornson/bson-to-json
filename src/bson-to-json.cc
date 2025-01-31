@@ -398,7 +398,6 @@ private:
 	}
 
 	bool resize(size_t to) {
-		// printf("resizing from %d to %d\n", outLen, to);
 		uint8_t* oldOut = out;
 		out = static_cast<uint8_t*>(std::realloc(out, to));
 		if (out == nullptr) {
@@ -406,7 +405,6 @@ private:
 			err = "Allocation failure";
 			return true;
 		}
-		// printf("allocated %p\n", out);
 		outLen = to;
 		return false;
 	}
@@ -417,8 +415,8 @@ private:
 			return false;
 		}
 
-		// TODO assert(outIdx + n < (outLen * 3) >> 1)
-		return resize((outLen * 3) >> 1);
+		size_t m = std::max(n, outLen);
+		return resize((m * 3) >> 1);
 	}
 
 	// The load/store methods must be small and inlinable in the fast case (not
