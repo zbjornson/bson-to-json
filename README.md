@@ -123,16 +123,19 @@ CPU's available features). One of `"AVX512"`, `"AVX2"`, `"SSE4.2"`, `"SSE2"`,
 
 | Type | js-bson | this, JS | this, CPP (AVX2) |
 | ---- | ---: | ---: | ---: |
-| long | 1,760 | 1,236 | 28,031
-| int | 1,503 | 1,371 | 17,264
-| ObjectId | 1,048 | 13,322 | 37,079
-| date | 445 | 663 | 10,686
-| number | 730 | 1,228 | 1,929
-| boolean | 444 | 4,839 | 9,283
-| null | 482 | 7,487 | 14,709
-| string\<len=1000, esc=0.00><sup>1</sup> | 12,304 | 781 | 55,502
-| string\<len=1000, esc=0.01> | 12,720 | 748 | 56,145
-| string\<len=1000, esc=0.05> | 12,320 | 756 | 43,867
+| long | 3,474 | 1,259 | 31,623
+| int | 6,128 | 5,051 | 56,153
+| ObjectId | 2,246 | 12,579 | 47,430
+| date | 732 | 749 | 16,746
+| number | 2,193 | 996 | 3,117
+| boolean | 1,299 | 1,246 | 10,633
+| null | 1,476 | 1,251 | 11,405
+| string\<len=1000, esc=0.00><sup>1</sup> | 18,488 | 5,392 | 76,628
+| string\<len=1000, esc=0.01> | 17,155 | 5,328 | 63,107
+| string\<len=1000, esc=0.05> | 15,982 | 4,864 | 51,982
+
+The JS version is not meant for production use. While it still reduces GC
+overhead, it is typically slower than js-bson.
 
 <sup>1</sup>String transcoding performance depends on the length of the string
 (`len`) and the number of characters that must be escaped in the JSON output

@@ -23,6 +23,10 @@ const CPP = require("../build/Release/bsonToJson.node");
 
 const types = process.argv.map(s => s.toLowerCase());
 
+function makeArrObj(len, fn) {
+	return {k: Array.from({length: len}, (_, i) => fn(i))};
+}
+
 function addAndRun(name, buf) {
 	const suite = new benchmark.Suite(name, {
 		onCycle: e => benchmarks.add(e.target),
@@ -41,42 +45,42 @@ function addAndRun(name, buf) {
 
 if (types.includes("objectid")) {
 	// ObjectIds are 12B + 1B type header = 13B each = ~2461 values in L1$
-	const docs = Array.from({length: 1000}, () => new bson.ObjectId());
+	const docs = makeArrObj(1000, () => new bson.ObjectId());
 	const buf = bson.serialize(docs);
 	addAndRun("ObjectId", buf);
 }
 
 if (types.includes("date")) {
 	// Dates are 8B + 1B type header = 9B each = ~3555 values in L1$
-	const docs = Array.from({length: 1000}, () => new Date());
+	const docs = makeArrObj(1000, () => new Date());
 	const buf = bson.serialize(docs);
 	addAndRun("Date", buf);
 }
 
 if (types.includes("int")) {
 	// Ints are 4B + 1B type header = 5B each = ~6400 values in L1$
-	const docs = Array.from({length: 2000}, (v, i) => i * 1000000);
+	const docs = makeArrObj(2000, (v, i) => i * 1000000);
 	const buf = bson.serialize(docs);
 	addAndRun("Int", buf);
 }
 
 if (types.includes("number")) {
 	// Numbers are 4B + 1B type header = 5B each = ~6400 values in L1$
-	const docs = Array.from({length: 2000}, Math.random);
+	const docs = makeArrObj(2000, Math.random);
 	const buf = bson.serialize(docs);
 	addAndRun("Number", buf);
 }
 
 if (types.includes("boolean")) {
 	// Booleans are 1B + 1B type header = 2B each = ~16000 values in L1$
-	const docs = Array.from({length: 8000}, () => Math.random() > 0.5);
+	const docs = makeArrObj(8000, () => Math.random() > 0.5);
 	const buf = bson.serialize(docs);
 	addAndRun("Boolean", buf);
 }
 
 if (types.includes("null")) {
 	// Nulls are 1B type header = 1B each = ~32000 values in L1$
-	const docs = Array.from({length: 8000}, () => null);
+	const docs = makeArrObj(8000, () => null);
 	const buf = bson.serialize(docs);
 	addAndRun("Null", buf);
 }
@@ -85,7 +89,7 @@ if (types.includes("long")) {
 	const Long = bson.Long;
 
 	// Longs are 8B + 1B type header = 9B each = ~3555 values in L1$
-	const docs = Array.from({length: 1000}, () => new Long(0x1fffff, 0xffffffff));
+	const docs = makeArrObj(1000, () => new Long(0x1fffff, 0xffffffff));
 	const buf = bson.serialize(docs);
 
 	// Large values in this test aren't fair; bsonToJson losslessly writes full
@@ -110,7 +114,7 @@ if (types.includes("string")) {
 	}).join("");
 	// Strings are 1B type header + 4B length + data
 	const aSize = Math.ceil(16000 / (5 + len));
-	const docs = Array.from({length: aSize}, () => str);
+	const docs = makeArrObj(aSize, () => str);
 	const buf = bson.serialize(docs);
 	addAndRun(`String<len=${len} escape=${esc}>`, buf);
 }
