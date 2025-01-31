@@ -26,21 +26,24 @@ yarn add zbjornson/bson-to-json
 npm install zbjornson/bson-to-json
 ```
 
+> [!Warning]
+> Please don't use the version on npm (ozonep-bson-to-json). Someone else
+> published this module with changes that should not have been made.
+
 ## Usage
 
-### `Transcoder#transcode()`
+### `new Transcoder(p?: PopulateInfo)`
 
-> ```ts
-> const {Transcoder, PopulateInfo} = require("bson-to-json");
-> const t = new Transcoder();
-> const buf = t.transcode(bson: Uint8Array, populateInfo?: PopulateInfo);
-> // (note that Buffers extend Uint8Arrays, so `bson` can be a Buffer)
-> ```
+Constructs a new Transcoder.
+
+`p` is an optional instance of the `PopulateInfo` class that is used for
+client-side joins.
+
+### `Transcoder#transcode(bson: Uint8Array): Buffer`
 
 Transcodes a BSON document to a JSON string stored in a Buffer.
 
-`populateInfo` is an optional instance of the `PopulateInfo` class that is used
-for client-side joins.
+Note that Buffers extend Uint8Array, so `bson` can be a Buffer instance.
 
 The output should be identical to `JSON.stringify(BSON.deserialize(v))`, with
 two exceptions:
@@ -52,6 +55,15 @@ two exceptions:
    module may throw different errors. (js-bson seems to rely, intentionally or
    not, on indexing past the end of a typed array returning `undefined`.)
 
+#### Example
+
+> ```ts
+> const {Transcoder, PopulateInfo} = require("bson-to-json");
+> const p = new PopulateInfo();
+> const t = new Transcoder(p);
+> const buf = t.transcode(bson: Uint8Array);
+> ```
+
 ### `send`
 
 > ```ts
@@ -59,6 +71,7 @@ two exceptions:
 > send(cursor: MongoDbCursor, ostr: Stream.Writable): Promise<void>
 > ```
 
+**This function hasn't been updated recently and might not work (quickly).**
 Efficiently sends the contents of a MongoDB cursor to a writable stream (e.g.
 an HTTP response). The returned Promise resolves when the cursor is drained, or
 rejects in case of an error.
@@ -100,7 +113,7 @@ CPU's available features). One of `"AVX512"`, `"AVX2"`, `"SSE4.2"`, `"SSE2"`,
   [zbjornson/fast-hex](https://github.com/zbjornson/fast-hex).
 * Fast integer encoding, using the method from [`fmtlib/fmt`](https://github.com/fmtlib/fmt).
 * Fast double encoding, using the same [double-conversion library](https://github.com/google/double-conversion)
-  used in v8.
+  used in V8.
 * Skips decoding array keys (which BSON stores as ASCII numbers) and instead
   advances by the known number of bytes in the key.
 * The `send` method has a tight call stack and avoids allocating a Promise for

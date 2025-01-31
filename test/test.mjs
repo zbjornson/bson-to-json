@@ -88,6 +88,41 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.mjs"], ["C++", "../build/
 			assert.equal(jsonBuffer.toString(), JSON.stringify(bson.deserialize(bsonBuffer)));
 		});
 
+		it("getUnknownIds works", function () {
+			const populateInfo = new PopulateInfo();
+			populateInfo.addItems("localKey", []);
+			populateInfo.addItems("em1.arr1.k4", []);
+
+			const doc1 = {
+				k1: "hey",
+				localKey: new bson.ObjectId(),
+				em1: {
+					k2: "yo",
+					em2: {
+						k3: 123
+					},
+					arr1: [
+						"hey",
+						{k4: new bson.ObjectId()}
+					]
+				},
+				t1: 2
+			};
+
+			const bsonBuffer = bson.serialize(doc1);
+			const t = new Transcoder(populateInfo);
+			t.getMissingIds(bsonBuffer);
+			const actual = {
+				localKey: populateInfo.getMissingIdsForPath("localKey"),
+				"em1.arr1.k4": populateInfo.getMissingIdsForPath("em1.arr1.k4")
+			};
+			const expected = {
+				localKey: [doc1.localKey.buffer],
+				"em1.arr1.k4": [doc1.em1.arr1[1].k4.buffer]
+			};
+			assert.deepStrictEqual(actual, expected);
+		});
+
 		it("populates paths", function () {
 			const ref1 = {
 				_id: new bson.ObjectId(),
@@ -117,7 +152,6 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.mjs"], ["C++", "../build/
 			const bsonBuffer = bson.serialize(doc1);
 			const t = new Transcoder(populateInfo);
 			const jsonBuffer = t.transcode(bsonBuffer);
-			t.transcode(bsonBuffer);
 			assert.strictEqual(
 				jsonBuffer.toString(),
 				`{"k1":"hey","localKey":{"_id":"${ref1._id}","prop1":"hello"},"em1":{"k2":"yo","em2":{"k3":123},"arr1":["hey",{"k4":{"_id":"${ref1._id}","prop1":"hello"}}]},"t1":2}`

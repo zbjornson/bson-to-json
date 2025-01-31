@@ -4,6 +4,7 @@
 #include <ctime> // gmtime
 #include <cmath> // isfinite
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <array>
 #include "napi.h"
@@ -176,6 +177,7 @@ struct SizedBuffer {
 };
 
 using ObjectIdMap = std::unordered_map<ObjectId, SizedBuffer, ObjectIdHasher, ObjectIdEquals>;
+using ObjectIdSet = std::unordered_set<ObjectId, ObjectIdHasher, ObjectIdEquals>;
 
 template <ISA isa>
 class PopulateInfo : public Napi::ObjectWrap<PopulateInfo<isa> > {
@@ -183,7 +185,8 @@ public:
 	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
 		Napi::Function func = Napi::ObjectWrap<PopulateInfo<isa>>::DefineClass(env, "PopulateInfo", {
 			Napi::ObjectWrap<PopulateInfo<isa>>::template InstanceMethod<&PopulateInfo<isa>::AddItems>("addItems"),
-			Napi::ObjectWrap<PopulateInfo<isa>>::template InstanceMethod<&PopulateInfo<isa>::RepeatPath>("repeatPath")
+			Napi::ObjectWrap<PopulateInfo<isa>>::template InstanceMethod<&PopulateInfo<isa>::RepeatPath>("repeatPath"),
+			Napi::ObjectWrap<PopulateInfo<isa>>::template InstanceMethod<&PopulateInfo<isa>::GetMissingIdsForPath>("getMissingIdsForPath")
 		});
 
 		Napi::FunctionReference* constructor = new Napi::FunctionReference();
@@ -252,8 +255,27 @@ public:
 		paths[path2] = it->second;
 	}
 
+	Napi::Value GetMissingIdsForPath(const Napi::CallbackInfo& info) {
+		Napi::Env env = info.Env();
+
+		std::string path = info[0].As<Napi::String>().Utf8Value();
+		auto it = missingIds.find(path);
+		if (it == missingIds.end()) {
+			return Napi::Array::New(env, 0);
+		}
+
+		Napi::Array arr = Napi::Array::New(env, it->second.size());
+		size_t i = 0;
+		for (auto const& id : it->second) {
+			Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, id.data(), id.size());
+			arr.Set(i++, buf);
+		}
+		return arr;
+	}
+
 	// TODO(perf) can this use string_view?
 	std::unordered_map<std::string, ObjectIdMap> paths;
+	std::unordered_map<std::string, ObjectIdSet> missingIds;
 };
 
 template<ISA isa>
@@ -271,7 +293,8 @@ public:
 
 	static Napi::Object Init(Napi::Env env, Napi::Object exports) {
 		Napi::Function func = Napi::ObjectWrap<Transcoder<isa> >::DefineClass(env, "Transcoder", {
-			Napi::ObjectWrap<Transcoder<isa> >::template InstanceMethod<&Transcoder<isa>::transcodeNodeFn>("transcode")
+			Napi::ObjectWrap<Transcoder<isa> >::template InstanceMethod<&Transcoder<isa>::transcodeNodeFn>("transcode"),
+			Napi::ObjectWrap<Transcoder<isa> >::template InstanceMethod<&Transcoder<isa>::getMissingIdsNodeFn>("getMissingIds")
 		});
 
 		ctor = new Napi::FunctionReference();
@@ -288,6 +311,40 @@ public:
 			// TODO instanceof check
 			populateInfo = Napi::ObjectWrap<PopulateInfo<isa> >::Unwrap(obj);
 			populateInfoRef = Napi::Reference<Napi::Object>::New(obj, 1);
+		}
+	}
+
+	/**
+	 * Finds missing IDs for paths in the populateInfo object.
+	 * @param in_ BSON document.
+	 */
+	void getMissingIdsNodeFn(const Napi::CallbackInfo& info) {
+		Napi::Env env = info.Env();
+
+		if (!info[0].IsTypedArray()) {
+			Napi::Error::New(env, "Input must be a buffer").ThrowAsJavaScriptException();
+			return;
+		}
+
+		if (info[0].As<Napi::TypedArray>().TypedArrayType() != napi_uint8_array) {
+			Napi::Error::New(env, "Input must be a buffer").ThrowAsJavaScriptException();
+			return;
+		}
+
+		Napi::Uint8Array arr = info[0].As<Napi::Uint8Array>();
+
+		in = arr.Data();
+		inLen = arr.ByteLength();
+		inIdx = 0;
+
+		if (UNLIKELY(inLen < 5)) {
+			Napi::Error::New(env, "Input buffer must have length >= 5").ThrowAsJavaScriptException();
+			return;
+		}
+
+		bool status = getMissingIds(false);
+		if (status) {
+			Napi::Error::New(env, err).ThrowAsJavaScriptException();
 		}
 	}
 
@@ -965,6 +1022,132 @@ private:
 		out[outIdx++] = '"';
 	}
 
+	bool getMissingIds(
+		bool isArray,
+		std::string baseKey = ""
+	) {
+		const int32_t size = readLE<int32_t>();
+		if (UNLIKELY(size < 5))
+			RETURN_ERR("BSON size must be >= 5");
+
+		if (UNLIKELY(size + inIdx - 4 > inLen))
+			RETURN_ERR("BSON size exceeds input length");
+
+		int32_t arrIdx = 0;
+
+		while (true) {
+			const uint8_t elementType = in[inIdx++];
+			if (UNLIKELY(elementType == 0))
+				break;
+
+			if (isArray) {
+				inIdx += nDigits(arrIdx);
+			} else {
+				size_t keyStart = inIdx;
+				size_t keyEnd = inIdx;
+				while (in[keyEnd] != 0 && keyEnd < inLen)
+					keyEnd++;
+
+				if (keyEnd >= inLen)
+					RETURN_ERR("Truncated BSON (in key)");
+
+				inIdx = keyEnd;
+				currentPath = baseKey.empty() ?
+					std::string(in + keyStart, in + inIdx) :
+					baseKey + "." + std::string(in + keyStart, in + inIdx);
+				inIdx++; // skip null terminator
+			}
+
+			switch (elementType) {
+			case BSON_DATA_STRING: {
+				const int32_t size = readLE<int32_t>();
+				if (UNLIKELY(size <= 0 || static_cast<size_t>(size) > inLen - inIdx))
+					RETURN_ERR("Bad string length");
+				inIdx += size;
+				break;
+			}
+			case BSON_DATA_OID: {
+				if (LIKELY(inIdx + 12 <= inLen)) {
+					if (populateInfo) {
+						auto idMapForPath = populateInfo->paths.find(currentPath);
+						if (idMapForPath != populateInfo->paths.end()) {
+							ObjectId id;
+							memcpy(id.data(), in + inIdx, 12);
+							auto doc = idMapForPath->second.find(id);
+							if (doc == idMapForPath->second.end()) {
+								populateInfo->missingIds.try_emplace(currentPath, ObjectIdSet())
+									.first->second.insert(id);
+							}
+						}
+					}
+
+					inIdx += 12;
+					break;
+				} else
+					RETURN_ERR("Truncated BSON (in ObjectId)");
+				break;
+			}
+			case BSON_DATA_INT: {
+				inIdx += 4;
+				if (UNLIKELY(inIdx > inLen))
+					RETURN_ERR("Truncated BSON (in Int)");
+				break;
+			}
+			case BSON_DATA_NUMBER:
+			case BSON_DATA_DATE:
+			case BSON_DATA_LONG: {
+				inIdx += 8;
+				if (UNLIKELY(inIdx > inLen))
+					RETURN_ERR("Truncated BSON");
+				break;
+			}
+			case BSON_DATA_BOOLEAN: {
+				inIdx++;
+				if (UNLIKELY(inIdx > inLen))
+					RETURN_ERR("Truncated BSON (in Boolean)");
+				break;
+			}
+			case BSON_DATA_OBJECT: {
+				// Bounds check in head of this function.
+				if (UNLIKELY((getMissingIds(false, currentPath))))
+					return true;
+				break;
+			}
+			case BSON_DATA_ARRAY: {
+				// Bounds check in head of this function.
+				if (UNLIKELY((getMissingIds(true, currentPath))))
+					return true;
+				if (UNLIKELY(in[inIdx - 1] != 0)) {
+					err = "Invalid array terminator byte";
+					return true;
+				}
+				break;
+			}
+			case BSON_DATA_NULL:
+			case BSON_DATA_UNDEFINED: {
+				break;
+			}
+			case BSON_DATA_DECIMAL128:
+			case BSON_DATA_BINARY:
+			case BSON_DATA_REGEXP:
+			case BSON_DATA_SYMBOL:
+			case BSON_DATA_TIMESTAMP:
+			case BSON_DATA_MIN_KEY:
+			case BSON_DATA_MAX_KEY:
+			case BSON_DATA_CODE:
+			case BSON_DATA_CODE_W_SCOPE:
+			case BSON_DATA_DBPOINTER:
+				RETURN_ERR("BSON type incompatible with JSON");
+			default:
+				RETURN_ERR("Unknown BSON type");
+			}
+
+			arrIdx++;
+		}
+
+		return false;
+	}
+
 	bool transcodeObject(
 		bool isArray,
 		std::string baseKey = ""
@@ -1225,6 +1408,7 @@ void PopulateInfo<isa>::AddItems(const Napi::CallbackInfo& info) {
 	uint32_t nBuffers = buffers.Length();
 	paths.try_emplace(path.Utf8Value(), ObjectIdMap());
 	ObjectIdMap& map = paths[path.Utf8Value()];
+	ObjectIdSet& set = missingIds[path.Utf8Value()];
 
 	Napi::Object wrapedTranscoder = Transcoder<isa>::ctor->New({});
 	Transcoder<isa>* trans = Transcoder<isa>::Unwrap(wrapedTranscoder);
@@ -1248,6 +1432,7 @@ void PopulateInfo<isa>::AddItems(const Napi::CallbackInfo& info) {
 		}
 		std::memcpy(sb.data, trans->out, sb.size);
 		map[trans->docId] = sb;
+		set.erase(trans->docId);
 	}
 }
 

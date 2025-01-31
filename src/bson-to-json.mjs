@@ -94,6 +94,8 @@ export class PopulateInfo {
 	constructor() {
 		/** @type {Map<string, Map<string, Uint8Array>>} */
 		this.paths = new Map();
+		/** @type {Record<string, Set<string>>} */
+		this.missingIds = Object.create(null);
 	}
 
 	/**
@@ -104,10 +106,12 @@ export class PopulateInfo {
 		if (!this.paths.has(path))
 			this.paths.set(path, new Map());
 		const map = /** @type {Map<string, Uint8Array>} */ (this.paths.get(path));
+		const mpSet = this.missingIds[path];
 		for (const item of items) {
 			const t = new Transcoder();
 			const jsonBuf = t.transcode(item);
 			map.set(t.docId, jsonBuf);
+			mpSet?.delete(t.docId);
 		}
 	}
 
@@ -120,6 +124,14 @@ export class PopulateInfo {
 		if (!p1Map)
 			throw new Error("Path not found: " + path1);
 		this.paths.set(path2, p1Map);
+	}
+
+	/** @param {string} path */
+	getMissingIdsForPath(path) {
+		const o = [];
+		for (const id of this.missingIds[path] ?? [])
+			o.push(Buffer.from(id, "hex"));
+		return o;
 	}
 }
 
@@ -135,6 +147,130 @@ export class Transcoder {
 		/** @type {string} */
 		this.docId = "";
 		this.populateInfo = populateInfo;
+	}
+
+	/**
+	 * Finds missing IDs for paths in the `populateInfo` object. Query for
+	 * them, then call `populateInfo.addItems` with the results, then
+	 * `transcode()` the `input`.
+	 * @param {Uint8Array} input BSON-encoded input.
+	 * @param {number} inIdx Internal
+	 * @param {boolean} isArray Internal
+	 * @param {string | null} baseKey Internal
+	 */
+	getMissingIds(input, inIdx = 0, isArray = false, baseKey = null) {
+		const inLen = input.length;
+		const size = readInt32LE(input, inIdx);
+
+		if (size < 5)
+			throw new Error("BSON size must be >= 5");
+		if (size + inIdx > inLen)
+			throw new Error("BSON size exceeds input length");
+
+		inIdx += 4;
+
+		let arrIdx = 0;
+
+		while (true) {
+			const elementType = input[inIdx++];
+			if (elementType === 0) break;
+
+			if (isArray) {
+				// Skip the number of digits in the key.
+				inIdx += nDigits(arrIdx);
+			} else {
+				// Name is a null-terminated string.
+				const nameStart = inIdx;
+				let nameEnd = inIdx;
+				while (input[nameEnd] !== 0 && nameEnd < inLen)
+					nameEnd++;
+	
+				if (nameEnd >= inLen)
+					throw new Error("Bad BSON Document: illegal CString");
+
+				inIdx = nameEnd + 1; // +1 to skip null terminator
+				const key = input.subarray(nameStart, nameEnd);
+				this.currentPath = baseKey ? `${baseKey}.${key}` : `${key}`;
+			}
+
+			switch (elementType) {
+			case BSON_DATA_STRING: {
+				const size = readInt32LE(input, inIdx);
+				inIdx += 4;
+				if (size <= 0 || size > inLen - inIdx)
+					throw new Error("Bad string length");
+				inIdx += size;
+				break;
+			}
+			case BSON_DATA_OID: {
+				if (inIdx + 12 > inLen)
+					throw new Error("Truncated BSON (in ObjectId)");
+				const idMapForPath = this.populateInfo?.paths.get(this.currentPath);
+				if (idMapForPath) {
+					const id = this.readObjectId(input, inIdx);
+					const doc = idMapForPath.get(id);
+					if (!doc) {
+						(this.populateInfo.missingIds[this.currentPath] ??= new Set()).add(id);
+					}
+				}
+				inIdx += 12;
+				break;
+			}
+			case BSON_DATA_INT: {
+				inIdx += 4;
+				if (inIdx > inLen)
+					throw new Error("Truncated BSON (in Int)");
+				break;
+			}
+			case BSON_DATA_NUMBER:
+			case BSON_DATA_DATE:
+			case BSON_DATA_LONG: {
+				inIdx += 8;
+				if (inIdx > inLen)
+					throw new Error("Truncated BSON");
+				break;
+			}
+			case BSON_DATA_BOOLEAN: {
+				inIdx++;
+				if (inIdx > inLen)
+					throw new Error("Truncated BSON (in Boolean)");
+				break;
+			}
+			case BSON_DATA_OBJECT: {
+				const objectSize = readInt32LE(input, inIdx);
+				this.getMissingIds(input, inIdx, false, this.currentPath);
+				inIdx += objectSize;
+				break;
+			}
+			case BSON_DATA_ARRAY: {
+				const objectSize = readInt32LE(input, inIdx);
+				this.getMissingIds(input, inIdx, true, this.currentPath);
+				inIdx += objectSize;
+				if (input[inIdx - 1] !== 0)
+					throw new Error("Invalid array terminator byte");
+				break;
+			}
+			case BSON_DATA_NULL:
+			case BSON_DATA_UNDEFINED: {
+				break;
+			}
+			case BSON_DATA_DECIMAL128:
+			case BSON_DATA_BINARY:
+			case BSON_DATA_REGEXP:
+			case BSON_DATA_SYMBOL:
+			case BSON_DATA_TIMESTAMP:
+			case BSON_DATA_MIN_KEY:
+			case BSON_DATA_MAX_KEY:
+			case BSON_DATA_CODE:
+			case BSON_DATA_CODE_W_SCOPE:
+			case BSON_DATA_DBPOINTER:
+				throw new Error("BSON type incompatible with JSON");
+			default:
+				throw new Error("Unknown BSON type " + elementType);
+			}
+
+			arrIdx++;
+		}
 	}
 
 	/**
@@ -333,7 +469,7 @@ export class Transcoder {
 			} else {
 				// Name is a null-terminated string. TODO(perf) we can copy
 				// bytes as we search.
-				let nameStart = inIdx;
+				const nameStart = inIdx;
 				let nameEnd = inIdx;
 				while (in_[nameEnd] !== 0 && nameEnd < inLen)
 					nameEnd++;
