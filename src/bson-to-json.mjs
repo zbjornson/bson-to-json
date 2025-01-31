@@ -1,7 +1,5 @@
 //@ts-check
 
-import Long from "long";
-
 const BSON_DATA_NUMBER = 1;
 const BSON_DATA_STRING = 2;
 const BSON_DATA_OBJECT = 3;
@@ -88,6 +86,13 @@ function readDoubleLE(buffer, index) {
 
 function hex(nibble) {
 	return nibble + (nibble < 10 ? 48 : 87);
+}
+
+function bigInt64FromHalves(low, high) {
+	low = BigInt.asUintN(32, BigInt(low));
+	high = BigInt.asUintN(32, BigInt(high));
+	const full = (high << 32n) | low;
+	return BigInt.asIntN(64, full);
 }
 
 export class PopulateInfo {
@@ -556,7 +561,7 @@ export class Transcoder {
 				inIdx += 4;
 				const highBits = readInt32LE(in_, inIdx);
 				inIdx += 4;
-				const ms = new Long(lowBits, highBits).toNumber();
+				const ms = Number(bigInt64FromHalves(lowBits, highBits));
 				const value = Buffer.from(new Date(ms).toISOString());
 				this.addQuotedVal(value);
 				break;
@@ -597,7 +602,7 @@ export class Transcoder {
 				if (highBits === 0) {
 					vx = lowBits;
 				} else {
-					vx = new Long(lowBits, highBits);
+					vx = bigInt64FromHalves(lowBits, highBits);
 				}
 				const value = Buffer.from(vx.toString());
 				this.addVal(value);

@@ -106,14 +106,15 @@ CPU's available features). One of `"AVX512"`, `"AVX2"`, `"SSE4.2"`, `"SSE2"`,
 
 ### Major reasons it's fast
 
-* Direct UTF8 to JSON-escaped string transcoding.
 * No waste temporary objects created for the GC to clean up.
+* Direct UTF8 to JSON-escaped string transcoding.
 * SSE2, SSE4.2 or AVX2-accelerated JSON string escaping.
 * AVX2-accelerated ObjectId hex string encoding, using the technique from
   [zbjornson/fast-hex](https://github.com/zbjornson/fast-hex).
 * Fast integer encoding, using the method from [`fmtlib/fmt`](https://github.com/fmtlib/fmt).
 * Fast double encoding, using the same [double-conversion library](https://github.com/google/double-conversion)
   used in V8.
+* Native 64-bit operations used for Dates and Longs.
 * Skips decoding array keys (which BSON stores as ASCII numbers) and instead
   advances by the known number of bytes in the key.
 * The `send` method has a tight call stack and avoids allocating a Promise for
@@ -123,10 +124,10 @@ CPU's available features). One of `"AVX512"`, `"AVX2"`, `"SSE4.2"`, `"SSE2"`,
 
 | Type | js-bson | this, JS | this, CPP (AVX2) |
 | ---- | ---: | ---: | ---: |
-| long | 3,474 | 1,259 | 31,623
+| long | 4,157 | 1,851 | 46,880
 | int | 6,128 | 5,051 | 56,153
 | ObjectId | 2,246 | 12,579 | 47,430
-| date | 732 | 749 | 16,746
+| date | 988 | 829 | 17,325
 | number | 2,193 | 996 | 3,117
 | boolean | 1,299 | 1,246 | 10,633
 | null | 1,476 | 1,251 | 11,405
@@ -143,6 +144,5 @@ overhead, it is typically slower than js-bson.
 
 ## Future Plans
 
-- Drop `long` dependency when Node 10 support is dropped.
 - Consider adding an option to prepend a comma to the output so it can be used
   with MongoDB cursors more efficiently.
