@@ -1042,6 +1042,7 @@ private:
 
 			if (isArray) {
 				inIdx += nDigits(arrIdx);
+				currentPath = baseKey.empty() ? std::string("") : baseKey;
 			} else {
 				size_t keyStart = inIdx;
 				size_t keyEnd = inIdx;
@@ -1177,6 +1178,7 @@ private:
 			// Write name
 			if (isArray) {
 				inIdx += nDigits(arrIdx);
+				currentPath = baseKey.empty() ? std::string("") : baseKey;
 			} else {
 				ENSURE_SPACE_OR_RETURN(1);
 				out[outIdx++] = '"';

@@ -183,6 +183,7 @@ export class Transcoder {
 			if (isArray) {
 				// Skip the number of digits in the key.
 				inIdx += nDigits(arrIdx);
+				this.currentPath = baseKey ?? "";
 			} else {
 				// Name is a null-terminated string.
 				const nameStart = inIdx;
@@ -471,6 +472,7 @@ export class Transcoder {
 			if (isArray) {
 				// Skip the number of digits in the key.
 				inIdx += nDigits(arrIdx);
+				this.currentPath = baseKey ?? "";
 			} else {
 				// Name is a null-terminated string. TODO(perf) we can copy
 				// bytes as we search.

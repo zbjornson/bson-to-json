@@ -103,6 +103,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.mjs"], ["C++", "../build/
 					},
 					arr1: [
 						"hey",
+						{k4: new bson.ObjectId()},
 						{k4: new bson.ObjectId()}
 					]
 				},
@@ -112,15 +113,17 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.mjs"], ["C++", "../build/
 			const bsonBuffer = bson.serialize(doc1);
 			const t = new Transcoder(populateInfo);
 			t.getMissingIds(bsonBuffer);
-			const actual = {
-				localKey: populateInfo.getMissingIdsForPath("localKey"),
-				"em1.arr1.k4": populateInfo.getMissingIdsForPath("em1.arr1.k4")
-			};
-			const expected = {
-				localKey: [doc1.localKey.buffer],
-				"em1.arr1.k4": [doc1.em1.arr1[1].k4.buffer]
-			};
-			assert.deepStrictEqual(actual, expected);
+			assert.deepStrictEqual(
+				populateInfo.getMissingIdsForPath("localKey"),
+				[doc1.localKey.buffer]
+			);
+			const k4actual = populateInfo.getMissingIdsForPath("em1.arr1.k4");
+			// Order is undefined:
+			try {
+				assert.deepStrictEqual(k4actual, [doc1.em1.arr1[1].k4.buffer, doc1.em1.arr1[2].k4.buffer]);
+			} catch {
+				assert.deepStrictEqual(k4actual, [doc1.em1.arr1[2].k4.buffer, doc1.em1.arr1[1].k4.buffer]);
+			}
 		});
 
 		it("populates paths", function () {
@@ -139,6 +142,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.mjs"], ["C++", "../build/
 					},
 					arr1: [
 						"hey",
+						{k4: ref1._id},
 						{k4: ref1._id}
 					]
 				},
@@ -154,7 +158,7 @@ for (const [name, loc] of [["JS", "../src/bson-to-json.mjs"], ["C++", "../build/
 			const jsonBuffer = t.transcode(bsonBuffer);
 			assert.strictEqual(
 				jsonBuffer.toString(),
-				`{"k1":"hey","localKey":{"_id":"${ref1._id}","prop1":"hello"},"em1":{"k2":"yo","em2":{"k3":123},"arr1":["hey",{"k4":{"_id":"${ref1._id}","prop1":"hello"}}]},"t1":2}`
+				`{"k1":"hey","localKey":{"_id":"${ref1._id}","prop1":"hello"},"em1":{"k2":"yo","em2":{"k3":123},"arr1":["hey",{"k4":{"_id":"${ref1._id}","prop1":"hello"}},{"k4":{"_id":"${ref1._id}","prop1":"hello"}}]},"t1":2}`
 			);
 		});
 
