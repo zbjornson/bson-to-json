@@ -593,6 +593,16 @@ private:
 			store_partial_128i(_mm256_extracti128_si256(v, 1), n - 16U);
 	}
 
+#if defined(__AVX512F__) && defined(B2J_USE_AVX512)
+	// Appears slower on Skylake, but is much shorter. Test sometime on newer hardware.
+	// Safely stores n bytes. May write more than n bytes.
+	[[gnu::target("avx512f,avx512bw,avx512vl,bmi2")]]
+	inline void store_partial_256i(__m256i v, size_t n) {
+		__mmask32 mask = _bzhi_u32(-1, n); // TODO n needs to clamp at outLen
+		_mm256_mask_storeu_epi8(out + outIdx, mask, v);
+		outIdx += n;
+	}
+#else
 	// Safely stores n bytes. May write more than n bytes.
 	[[gnu::target("avx2")]]
 	inline void store_partial_256i(__m256i v, size_t n) {
@@ -603,6 +613,7 @@ private:
 			store_partial_256i_slow(v, n);
 		}
 	}
+#endif // defined(__AVX512F__) && defined(B2J_USE_AVX512)
 
 	// Safely stores n bytes. May write more than n bytes.
 	[[gnu::target("avx512f,avx512bw,bmi2")]]
