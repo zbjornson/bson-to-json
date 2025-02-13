@@ -542,10 +542,13 @@ private:
 
 	[[gnu::target("sse2")]]
 	NOINLINE(void store_partial_128i_slow(__m128i v, size_t n)) {
+		if (n >= 16) {
+			_mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), v);
+			outIdx += 16;
+			return;
+		}
 		// maskmovdqu is implicitly NT.
-		// Does AVX512BW have fast byte-granular store?
-		// pblendvb for load+blend+store requires SSE4.1 and this has to work with SSE2.
-		// TODO(perf) Try _mm_storeu_si128(temp, v), memcpy(out + outIdx, temp, n)?
+		// TODO(perf) _mm256_mask_storeu_epi8, _mm_mask_storeu_epi8 with AVX512
 		union {
 			int8_t  i8[16];
 			int16_t i16[8];
@@ -569,31 +572,36 @@ private:
 		if (n & 1) {
 			out[outIdx + j] = u.i8[j];
 		}
+		outIdx += n;
 	}
 
 	// Safely stores n bytes. May write more than n bytes.
 	[[gnu::target("sse2")]]
 	inline void store_partial_128i(__m128i v, size_t n) {
 		if (LIKELY(16 + outIdx < outLen)) {
-			return _mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), v);
+			_mm_storeu_si128(reinterpret_cast<__m128i*>(out + outIdx), v);
+			outIdx += n;
+		} else {
+			store_partial_128i_slow(v, n);
 		}
-		store_partial_128i_slow(v, n);
 	}
 
 	[[gnu::target("avx2")]]
 	NOINLINE(void store_partial_256i_slow(__m256i v, size_t n)) {
-		store_partial_128i(_mm256_castsi256_si128(v), n);
-		if (n > 16)
-			store_partial_128i(_mm256_extracti128_si256(v, 1), n - 16);
+		store_partial_128i(_mm256_castsi256_si128(v), std::min(n, static_cast<size_t>(16U)));
+		if (n > 16U)
+			store_partial_128i(_mm256_extracti128_si256(v, 1), n - 16U);
 	}
 
 	// Safely stores n bytes. May write more than n bytes.
 	[[gnu::target("avx2")]]
 	inline void store_partial_256i(__m256i v, size_t n) {
 		if (LIKELY(32 + outIdx < outLen)) {
-			return _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), v);
+			_mm256_storeu_si256(reinterpret_cast<__m256i*>(out + outIdx), v);
+			outIdx += n;
+		} else {
+			store_partial_256i_slow(v, n);
 		}
-		store_partial_256i_slow(v, n);
 	}
 
 	// Safely stores n bytes. May write more than n bytes.
@@ -601,6 +609,7 @@ private:
 	inline void store_partial_512i(__m512i v, size_t n) {
 		__mmask64 mask = _bzhi_u64(-1, n); // TODO n needs to clamp at outLen
 		_mm512_mask_storeu_epi8(out + outIdx, mask, v);
+		outIdx += n;
 	}
 
 	// Writes the `\ u 0 0 ch cl` sequence
@@ -665,7 +674,6 @@ private:
 
 			store_partial_128i(chars, esRIdx);
 			n -= esRIdx;
-			outIdx += esRIdx;
 			inIdx += esRIdx;
 
 			if (esRIdx < clampedN) {
@@ -703,7 +711,6 @@ private:
 
 			store_partial_128i(chars, esRIdx);
 			n -= esRIdx;
-			outIdx += esRIdx;
 			inIdx += esRIdx;
 
 			if (esRIdx < clampedN) {
@@ -752,7 +759,6 @@ private:
 
 			store_partial_256i(chars, esRIdx);
 			n -= esRIdx;
-			outIdx += esRIdx;
 			inIdx += esRIdx;
 
 			if (esRIdx < clampedN) {
@@ -801,7 +807,6 @@ private:
 
 			store_partial_512i(chars, esRIdx);
 			n -= esRIdx;
-			outIdx += esRIdx;
 			inIdx += esRIdx;
 
 			if (esRIdx < clampedN) {
@@ -861,7 +866,6 @@ private:
 
 			ENSURE_SPACE_OR_RETURN(esRIdx);
 			store_partial_128i(chars, esRIdx);
-			outIdx += esRIdx;
 			inIdx += esRIdx;
 
 			if (esRIdx < 16) {
@@ -904,7 +908,6 @@ private:
 
 			ENSURE_SPACE_OR_RETURN(esRIdx);
 			store_partial_256i(chars, esRIdx);
-			outIdx += esRIdx;
 			inIdx += esRIdx;
 
 			if (esRIdx < 32) {
@@ -943,7 +946,6 @@ private:
 
 			ENSURE_SPACE_OR_RETURN(esRIdx);
 			store_partial_512i(chars, esRIdx);
-			outIdx += esRIdx;
 			inIdx += esRIdx;
 
 			if (esRIdx < 64) {
@@ -1018,7 +1020,6 @@ private:
 
 		out[outIdx++] = '"';
 		store_partial_256i(b, 24);
-		outIdx += 24;
 		out[outIdx++] = '"';
 	}
 
