@@ -376,22 +376,7 @@ public:
 			return env.Undefined();
 		}
 
-		size_t chunkSize = 0;
-		if (chunkSize == 0) {
-			// Estimate outLen at 2.5x inLen. Expansion rates for values:
-			// ObjectId: 12B -> 24B plus 2 for quotes
-			// String: 5 for header + 1 per char -> 1 or 2 per char + 2 for quotes
-			// Int: 1+4 -> up to 11
-			// Long: 1+8 -> up to 20
-			// Number: 1+8 -> up to ???
-			// Date: 1+8 -> 24 plus 2 for quotes
-			// Boolean: 1+1 -> 4 or 5
-			// Null: 1+0 -> 4
-			// The maximum expansion ratio is 1:5 (for null), but averages ~2.3x
-			// for mixed data or ~1x for string-heavy data.
-			chunkSize = (inLen * 10) >> 2;
-		}
-
+		size_t chunkSize = static_cast<size_t>(inLen * expansionRatio + 1);
 		out = nullptr;
 		outLen = 0;
 		outIdx = 0;
@@ -408,6 +393,8 @@ public:
 			std::free(data);
 		});
 
+		expansionRatio = std::max(expansionRatio, static_cast<double>(outIdx) / inLen);
+
 		out = nullptr;
 		outLen = 0;
 		outIdx = 0;
@@ -418,8 +405,7 @@ public:
 	bool transcode(
 		const uint8_t* in_,
 		size_t inLen_,
-		bool isArray = false,
-		size_t chunkSize = 0
+		bool isArray = false
 	) {
 
 		if (UNLIKELY(inLen_ < 5))
@@ -429,9 +415,7 @@ public:
 		inLen = inLen_;
 		inIdx = 0;
 
-		if (chunkSize == 0) {
-			chunkSize = (inLen * 10) >> 2;
-		}
+		size_t chunkSize = (inLen * 10) >> 2;
 
 		out = nullptr;
 		outLen = 0;
@@ -445,6 +429,19 @@ private:
 	const uint8_t* in = nullptr;
 	size_t inIdx = 0;
 	size_t inLen = 0;
+	// Expansion ratios for the different types:
+	// ObjectId: 12B -> 24B plus 2 for quotes
+	// String: 5 for header + 1 per char -> 1 or 2 per char + 2 for quotes
+	// Int: 1+4 -> up to 11
+	// Long: 1+8 -> up to 20
+	// Number: 1+8 -> up to 20ish
+	// Date: 1+8 -> 24 plus 2 for quotes
+	// Boolean: 1+1 -> 4 or 5
+	// Null: 1+0 -> 4
+	// The maximum expansion ratio is 1:5 (for null), but averages ~2.3x
+	// for mixed data or ~1x for string-heavy data.
+	// Populated fields have unpredictable expansion.
+	double expansionRatio = 2.5;
 
 	template<typename T>
 	inline T readLE() {
