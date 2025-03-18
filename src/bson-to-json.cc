@@ -441,6 +441,18 @@ public:
 		return transcodeObject(isArray);
 	}
 
+	bool resize(size_t to) {
+		uint8_t* oldOut = out;
+		out = static_cast<uint8_t*>(std::realloc(out, to));
+		if (out == nullptr) {
+			std::free(oldOut);
+			err = "Allocation failure";
+			return true;
+		}
+		outLen = to;
+		return false;
+	}
+
 private:
 	const uint8_t* in = nullptr;
 	size_t inIdx = 0;
@@ -452,18 +464,6 @@ private:
 		memcpy(&v, in + inIdx, sizeof(T));
 		inIdx += sizeof(T);
 		return v;
-	}
-
-	bool resize(size_t to) {
-		uint8_t* oldOut = out;
-		out = static_cast<uint8_t*>(std::realloc(out, to));
-		if (out == nullptr) {
-			std::free(oldOut);
-			err = "Allocation failure";
-			return true;
-		}
-		outLen = to;
-		return false;
 	}
 
 	[[nodiscard]]
@@ -1436,15 +1436,13 @@ void PopulateInfo<isa>::AddItems(const Napi::CallbackInfo& info) {
 			Napi::Error::New(env, trans->err).ThrowAsJavaScriptException();
 			return;
 		}
-
-		SizedBuffer sb;
-		sb.size = trans->outIdx;
-		sb.data = static_cast<uint8_t*>(std::malloc(sb.size));
-		if (sb.data == nullptr) {
+		if (trans->resize(trans->outIdx)) {
 			Napi::Error::New(env, "Allocation failure").ThrowAsJavaScriptException();
 			return;
 		}
-		std::memcpy(sb.data, trans->out, sb.size);
+		SizedBuffer sb;
+		sb.size = trans->outIdx;
+		sb.data = trans->out;
 		map[trans->docId] = sb;
 		set.erase(trans->docId);
 	}
