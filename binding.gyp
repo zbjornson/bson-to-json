@@ -20,12 +20,7 @@
       "defines": [
         "NAPI_DISABLE_CPP_EXCEPTIONS"
       ],
-      "cflags_cc!": [
-        # Unset Node.js v8's std.
-        "-std=gnu++0x"
-      ],
       "cflags":[
-        "-std=c++17",
         "-fvisibility=hidden",
         "-march=native",
         "-falign-loops=32",
@@ -34,10 +29,6 @@
       ],
       "msvs_settings": {
         "VCCLCompilerTool": {
-          "AdditionalOptions": [
-            "/std:c++17 %(AdditionalOptions)"
-            # c++17 for [[nodiscard]]
-          ],
           "EnableEnhancedInstructionSet": 0 # /arch:
           # 0-not set, 1-sse, 2-sse2, 3-avx, 4-ia32, 5-avx2
           # Not set: spurious warning with /arch:SSE2, which is baseline anyway
